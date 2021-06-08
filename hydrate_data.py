@@ -6,6 +6,7 @@ from tqdm import tqdm
 
 
 def retrieve_archive(archive_type):
+    print(f"retrieve {archive_type}...")
     with tqdm(unit_scale=True, unit_divisor=1024, unit="B") as progress:
         opath = f"./{archive_type}.csv.gz"
         if os.path.exists(opath):
