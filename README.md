@@ -19,8 +19,8 @@ Basically the way you use all this stuff is:
    of common ones. This is useful both for constructing and querying the graph:
    normally when embeddings are produced by averaging, signal is lost because
    dissonant noise cancels out most of the semantic information. The attenuator
-   is computed to minimize this effect using least-squares optimization.
-   Thanks to [Arora, et al.][alacarte] for the tech.
+   is computed and used during one-shot embedding of tagsets to minimize this 
+   effect. Thanks to [Arora, et al.][alacarte] for the tech.
 4. run `construct_index.py`. This will build an index file that can be queried
    for the **attenuated mean** of the tag-vectors for any given post using
    [`spotify/annoy`][annoy], yielding the post's top `k` approximate nearest
@@ -34,9 +34,9 @@ Basically the way you use all this stuff is:
    that we can easily overlook, and well worth the cost. I've looked into
    alternatives. Some are faster, some are more accurate, some even save more
    space. But all of them are also more difficult to use, feature worse
-   documentation, and cost more compute. `annoy` is the best, at least
-   without domain-specific optimization for our use-case or use of extremely
-   powerful hardware. Trust me on this.
+   documentation, and cost more compute. `annoy` is the best, at least without
+   domain-specific optimization for our use-case or use of extremely powerful
+   hardware. Trust me on this.
 
 [alacarte]: http://www.offconvex.org/2018/09/18/alacarte/
 [annoy]: https://github.com/spotify/annoy
