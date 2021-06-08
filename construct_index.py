@@ -12,11 +12,12 @@ from tqdm import tqdm
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--offset", type=int, default=1_700_000)
-    parser.add_argument("--dict-file", type=open, default="./dictionary.pkl")
+    parser.add_argument(
+        "--dict-file", type=lambda path: open(path, "rb"), default="./dictionary.pkl"
+    )
+    parser.add_argument("--attenuator", type=np.load, default="./attenuator.npy")
     parser.add_argument("--tree-file", default=None)
-    parser.add_argument("--attenuator", type=np.load, default="./A.npy", required=True)
     args = parser.parse_args()
-
     index_name = args.tree_file or f"./posts.skip{args.offset}.annoy.idx"
     dictionary = dict(pickle.load(args.dict_file))
     args.dict_file.close()
