@@ -38,6 +38,8 @@ def main():
         print("embed posts...")
         A = args.attenuator
         for post in tqdm(posts, total=2_800_000 - args.offset):
+            if post["deleted"] == "t":
+                continue
             mu = np.zeros(n_dim)
             k = 0
             for t in post["tag_string"].split():
