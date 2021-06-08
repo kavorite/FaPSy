@@ -4,6 +4,7 @@ import gzip
 import io
 import pickle
 
+import numpy as np
 import scipy.sparse
 import scipy.sparse.linalg
 from tqdm import tqdm
@@ -29,12 +30,13 @@ def tag_hit_generator(tagset, saturation_hits=8, goal_saturation=0.9):
                         goal[t] -= 1
                     if goal[t] == 0:
                         del goal[t]
+                del tags
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--k-top", type=int, default=8192)
-    parser.add_argument("--k-dim", type=int, default=32)
+    parser.add_argument("--k-top", type=int, default=1024)
+    parser.add_argument("--k-dim", type=int, default=96)
     args = parser.parse_args()
     csv.field_size_limit(1 << 20)
     with gzip.open("./tags.csv.gz") as istrm:
@@ -48,7 +50,7 @@ def main():
     tag_idx = dict()
     # tag_idf = np.zeros(args.k_top)
     for tag in all_tags:
-        if tag["category"] not in "0":
+        if tag["category"] not in "045":
             continue
         t = tag["name"]
         if not t.isprintable():
@@ -61,8 +63,7 @@ def main():
             break
 
     print("generate cooccurrence matrix...")
-    coo_idx = []
-    coo_val = []
+    C = np.zeros((args.k_top, args.k_top))
     for tags in tag_hit_generator(tag_idx):
         for t in tags:
             if t not in tag_idx:
@@ -71,15 +72,11 @@ def main():
                 if w not in tag_idx:
                     continue
                 i, j = tag_idx[t], tag_idx[w]
-                coo_idx.append((i, j))
-                coo_val.append(1.0)
+                C[i, j] += 1
 
     print("factorize...")
-    C = scipy.sparse.coo_matrix((coo_val, zip(*coo_idx))).tocsr()
-    row_norms = C.max(axis=-1).A.flatten()
-    N = scipy.sparse.spdiags(1.0 / row_norms, 0, *C.shape)
-    C = C * N
-    U, _, _ = scipy.sparse.linalg.svds(C, args.k_dim, return_singular_vectors="u")
+    C /= (C.max(axis=-1) + 1e-16)[:, None]
+    U, _, _ = np.linalg.svd(C, full_matrices=False, hermitian=True)
     # W = tag_idf[:, None]
     # NOTE: downweighting by idf is no longer necessary with linear attenuation
     # U *= W
