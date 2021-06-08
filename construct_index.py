@@ -49,7 +49,7 @@ def main():
                 mu = A @ mu
                 ann.add_item(int(post["id"]) - args.offset, mu)
     print("constructing index...")
-    ann.build(n_trees=n_dim)
+    ann.build(n_trees=16)
     print(f"index written to {index_name}")
 
 

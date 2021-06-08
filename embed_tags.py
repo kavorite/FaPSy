@@ -36,7 +36,7 @@ def tag_hit_generator(tagset, saturation_hits=8, goal_saturation=0.9):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--k-top", type=int, default=1024)
-    parser.add_argument("--k-dim", type=int, default=96)
+    parser.add_argument("--k-dim", type=int, default=32)
     args = parser.parse_args()
     csv.field_size_limit(1 << 20)
     with gzip.open("./tags.csv.gz") as istrm:
