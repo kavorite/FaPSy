@@ -1,7 +1,6 @@
 import csv
 import gzip
 import io
-import pdb
 import pickle
 import warnings
 
@@ -40,7 +39,6 @@ with warnings.catch_warnings():
         except:
             safe.append(False)
 
-pdb.set_trace()
 X = np.vstack(X)
 # find the rarest vector for each context
 Y = embeddings[centroids][safe]
