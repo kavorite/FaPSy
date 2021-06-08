@@ -43,6 +43,7 @@ def main():
                 if t in dictionary:
                     mu += dictionary[t]
                     k += 1
+            if k != 0:
                 mu /= k
                 mu = A @ mu
                 ann.add_item(int(post["id"]) - args.offset, mu)
