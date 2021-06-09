@@ -9,9 +9,8 @@ import numpy as np
 from embed_tags import tag_hit_generator
 
 csv.field_size_limit(1 << 20)
-with open("./dictionary.pkl", "rb") as istrm:
-    dictionary = pickle.load(istrm)
-all_tags, embeddings = zip(*dictionary)
+dictfile = np.load("./dictionary.npz")
+all_tags, embeddings = dictfile["tags"], dictfile["vecs"]
 embeddings = np.vstack(embeddings)
 tag_idx = {t: i for i, t in enumerate(all_tags)}
 
