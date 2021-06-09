@@ -34,6 +34,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--k-top", type=int, default=2048)
     parser.add_argument("--k-dim", type=int, default=64)
+    parser.add_argument("--dump-coocs", action="store_true", default=False)
     args = parser.parse_args()
     csv.field_size_limit(1 << 20)
     with gzip.open("./tags.csv.gz") as istrm:
@@ -53,8 +54,6 @@ def main():
         if not t.isprintable():
             continue
         i = len(tag_idx)
-        # idf = np.log(2.8e6 / float(tag["post_count"]))
-        # tag_idf[i] = idf
         tag_idx[t] = i
         if len(tag_idx) == args.k_top:
             break
@@ -74,9 +73,6 @@ def main():
     print("factorize...")
     C /= (C.max(axis=-1) + 1e-16)[:, None]
     U, _, _ = np.linalg.svd(C, full_matrices=False, hermitian=True)
-    # W = tag_idf[:, None]
-    # NOTE: downweighting by idf is no longer necessary with linear attenuation
-    # U *= W
 
     tags, indx = zip(*tag_idx.items())
     vecs = U[np.array(indx)]
