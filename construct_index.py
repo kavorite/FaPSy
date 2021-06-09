@@ -12,14 +12,12 @@ from tqdm import tqdm
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--offset", type=int, default=1_700_000)
-    parser.add_argument(
-        "--dict-file", type=lambda path: open(path, "rb"), default="./dictionary.pkl"
-    )
+    parser.add_argument("--dict-file", type=np.load, default="./dictionary.npz")
     parser.add_argument("--attenuator", type=np.load, default="./attenuator.npy")
     parser.add_argument("--tree-file", default=None)
     args = parser.parse_args()
     index_name = args.tree_file or f"./posts.skip{args.offset}.annoy.idx"
-    dictionary = dict(pickle.load(args.dict_file))
+    dictionary = dict(zip(args.dict_file["tags"], args.dict_file["vecs"]))
     args.dict_file.close()
     n_dim = next(iter(dictionary.values())).shape[0]
 
@@ -38,7 +36,7 @@ def main():
         print("embed posts...")
         A = args.attenuator
         for post in tqdm(posts, total=2_800_000 - args.offset):
-            if post["deleted"] == "t":
+            if post["is_deleted"] == "t":
                 continue
             mu = np.zeros(n_dim)
             k = 0
