@@ -72,10 +72,11 @@ def main():
 
     print("factorize...")
     C /= (C.max(axis=-1) + 1e-16)[:, None]
-    U, _, _ = np.linalg.svd(C, full_matrices=False, hermitian=True)
-
+    U, s, _ = np.linalg.svd(C, full_matrices=False, hermitian=True)
+    S = np.diag(s)[:, : args.k_dim]
+    D = U @ S
     tags, indx = zip(*tag_idx.items())
-    vecs = U[np.array(indx)]
+    vecs = D[np.array(indx)]
     tags = np.array(tags)
     np.savez("./dictionary.npz", tags=tags, vecs=vecs, allow_pickle=False)
     print("embeddings written to dictionary.npz")
