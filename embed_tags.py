@@ -32,8 +32,8 @@ def tag_hit_generator(tagset, saturation_hits=8, goal_saturation=0.9):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--k-top", type=int, default=1024)
-    parser.add_argument("--k-dim", type=int, default=32)
+    parser.add_argument("--k-top", type=int, default=2048)
+    parser.add_argument("--k-dim", type=int, default=64)
     args = parser.parse_args()
     csv.field_size_limit(1 << 20)
     with gzip.open("./tags.csv.gz") as istrm:
@@ -81,7 +81,7 @@ def main():
     tags, indx = zip(*tag_idx.items())
     vecs = U[np.array(indx)]
     tags = np.array(tags)
-    np.savez("./dictionary.npz", tags, vecs, allow_pickle=False)
+    np.savez("./dictionary.npz", tags=tags, vecs=vecs, allow_pickle=False)
     print("embeddings written to dictionary.npz")
 
 
