@@ -69,7 +69,7 @@ class Embedder:
             if t in self.V:
                 v += self.V[t]
                 k += 1
-        if k == 0:
+        if k != 0:
             v /= k
         v = self.A @ v.reshape(1, self.n_dim)
         return v.flatten()
