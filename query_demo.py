@@ -8,6 +8,8 @@ import annoy
 import numpy as np
 from unidecode import unidecode
 
+from common import Embedder, PostGraph
+
 
 def strip_tag(t):
     t = unidecode(t)
@@ -15,58 +17,24 @@ def strip_tag(t):
     return t
 
 
-class Embedder:
-    def __init__(self, attenuator, vocab):
-        self.n_dim = next(iter(vocab.values())).shape[0]
-        self._A = attenuator
-        self._V = vocab
-
-    def __call__(self, tags):
-        mu = np.zeros(self.n_dim)
-        k = 0
-        for t in tags:
-            if t in self._V:
-                mu += self._V[t]
-                k += 1
-        if k == 0:
-            mu /= k
-        return self._A @ mu
-
-
 def main():
-    with open("./dictionary.pkl", "rb") as istrm:
-        V = {strip_tag(t): v for t, v in pickle.load(istrm)}
-
-    A = np.load("./attenuator.npy")
-
-    embed = Embedder(A, V)
-
-    ann = annoy.AnnoyIndex(embed.n_dim, "angular")
-    idx_paths = glob.glob(r"./posts.skip[0-9]*.annoy.idx")
-    if not idx_paths:
-        sys.stderr.write("Fatal: no index file found. Consult README.md.\n")
-        sys.exit(1)
-    idx_path = min(idx_paths)
-    offset = int(re.search(r"[0-9]+", idx_path)[0])
-    ann.load(idx_path)
+    graph = PostGraph.load_path("./")
+    print(graph.offset)
+    stripdict = {strip_tag(t): t for t in graph.embed.V}
     while True:
         sys.stderr.write("tags> ")
-        query = input().split()
-        q = embed(query)
-        if np.linalg.norm(q) == 0:
-            sys.stderr.write("looks like that query maps to a zero vector 😰\n")
-            continue
+        query = (q if q not in stripdict else stripdict[q] for q in input().split())
         top_k = 8
-        post_ids = ann.get_nns_by_vector(q, n=top_k, search_k=64)
-        if not post_ids:
+        post_ids = graph.tag_neighbors(query, top_k)
+        if len(post_ids) == 0:
             sys.stderr.write(
                 "looks like we don't have any neighbors for that query 😰\n"
             )
             continue
-        sys.stderr.write(f"open {len(post_ids)} matches...\n")
-        for post_id in post_ids[:top_k]:
-            post_id += offset
-            endpoint = f"https://e621.net/posts/{post_id}"
+        hits = [f"https://e621.net/posts/{post_id}" for post_id in post_ids[:top_k]]
+        sys.stderr.write(f"open {len(post_ids)} closest:\n")
+        sys.stderr.write("\n".join(hits))
+        for endpoint in hits:
             webbrowser.open_new_tab(endpoint)
 
 
