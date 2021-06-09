@@ -2,11 +2,8 @@ import argparse
 import csv
 import gzip
 import io
-import pickle
 
 import numpy as np
-import scipy.sparse
-import scipy.sparse.linalg
 from tqdm import tqdm
 
 
@@ -80,10 +77,12 @@ def main():
     # W = tag_idf[:, None]
     # NOTE: downweighting by idf is no longer necessary with linear attenuation
     # U *= W
-    dictionary = tuple((t, U[i]) for t, i in tag_idx.items())
-    with open("./dictionary.pkl", "wb+") as ostrm:
-        pickle.dump(dictionary, ostrm)
-    print("embeddings written to dictionary.pkl")
+
+    tags, indx = zip(*tag_idx.items())
+    vecs = U[np.array(indx)]
+    tags = np.array(tags)
+    np.savez("./dictionary.npz", tags, vecs, allow_pickle=False)
+    print("embeddings written to dictionary.npz")
 
 
 if __name__ == "__main__":
