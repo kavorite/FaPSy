@@ -21,6 +21,7 @@ def index_offset(index_path):
 
 def search_index(root):
     idx_paths = glob.glob(f"{root}/posts.skip[0-9]*.annoy.idx")
+    idx_paths += glob.glob(f"{root}/*.annoy.idx")
     idx_paths = np.array(idx_paths, dtype=object)
     if not idx_paths:
         return
@@ -93,6 +94,8 @@ class PostGraph:
         A = np.load(attnpath)
         embed = Embedder(A, V)
         index_path = index_path or search_index(root)
+        if not index_path:
+            raise ValueError(f"no index files found in")
         offset = idx_offset or index_offset(index_path or "") or 0
         index = annoy.AnnoyIndex(embed.n_dim, metric="angular")
         index.load(index_path)
