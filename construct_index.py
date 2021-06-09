@@ -8,6 +8,8 @@ import annoy
 import numpy as np
 from tqdm import tqdm
 
+from common import Embedder
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -17,12 +19,12 @@ def main():
     parser.add_argument("--tree-file", default=None)
     args = parser.parse_args()
     index_name = args.tree_file or f"./posts.skip{args.offset}.annoy.idx"
-    dictionary = dict(zip(args.dict_file["tags"], args.dict_file["vecs"]))
+    vocab = dict(zip(args.dict_file["tags"], args.dict_file["vecs"]))
+    embed = Embedder(args.attenuator, vocab)
     args.dict_file.close()
-    n_dim = next(iter(dictionary.values())).shape[0]
 
     print("embed posts...")
-    ann = annoy.AnnoyIndex(f=n_dim, metric="angular")
+    ann = annoy.AnnoyIndex(f=embed.n_dim, metric="angular")
     csv.field_size_limit(1 << 20)
 
     ann.on_disk_build(index_name)
@@ -34,20 +36,11 @@ def main():
             if i == args.offset:
                 break
         print("embed posts...")
-        A = args.attenuator
         for post in tqdm(posts, total=2_800_000 - args.offset):
             if post["is_deleted"] == "t":
                 continue
-            mu = np.zeros(n_dim)
-            k = 0
-            for t in post["tag_string"].split():
-                if t in dictionary:
-                    mu += dictionary[t]
-                    k += 1
-            if k != 0:
-                mu /= k
-                mu = A @ mu
-                ann.add_item(int(post["id"]) - args.offset, mu)
+            x = embed(post["tag_string"].split())
+            ann.add_item(int(post["id"]) - args.offset, x)
     print("constructing index...")
     ann.build(n_trees=16)
     print(f"index written to {index_name}")

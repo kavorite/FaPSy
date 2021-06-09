@@ -71,7 +71,8 @@ class Embedder:
                 k += 1
         if k == 0:
             v /= k
-        return self.A @ v
+        v = self.A @ v.reshape(1, self.n_dim)
+        return v.flatten()
 
     def __call__(self, tags):
         return self.embed_tags(tags)

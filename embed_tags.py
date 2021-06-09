@@ -46,7 +46,6 @@ def main():
     all_tags.reverse()
 
     tag_idx = dict()
-    # tag_idf = np.zeros(args.k_top)
     for tag in all_tags:
         if tag["category"] not in "045":
             continue
