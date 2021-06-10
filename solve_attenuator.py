@@ -9,7 +9,7 @@ import numpy as np
 from embed_tags import tag_hit_generator
 
 csv.field_size_limit(1 << 20)
-dictfile = np.load("./dictionary.npz")
+dictfile = np.load("./index/dictionary.npz")
 all_tags, embeddings = dictfile["tags"], dictfile["vecs"]
 embeddings = np.vstack(embeddings)
 tag_idx = {t: i for i, t in enumerate(all_tags)}
@@ -44,5 +44,5 @@ Y = embeddings[centroids][safe]
 
 print("compute the attenuation matrix...")
 A, *_ = np.linalg.lstsq(X, Y, rcond=None)
-np.save("attenuator.npy", A, allow_pickle=False)
-print("attenuation matrix written to attenuator.npy")
+np.save("./index/attenuator.npy", A, allow_pickle=False)
+print("attenuation matrix written to ./index/attenuator.npy")

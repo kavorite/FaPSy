@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 def tag_hit_generator(tagset, saturation_hits=8, goal_saturation=0.9):
     tagset = set(tagset)
-    with gzip.open("./posts.csv.gz") as istrm:
+    with gzip.open("./db_export/posts.csv.gz") as istrm:
         posts = csv.DictReader(io.TextIOWrapper(istrm, encoding="utf8"))
         goal = {t: saturation_hits for t in tagset}
         with tqdm(total=saturation_hits * len(tagset)) as progress:
@@ -37,7 +37,7 @@ def main():
     parser.add_argument("--dump-coocs", action="store_true", default=False)
     args = parser.parse_args()
     csv.field_size_limit(1 << 20)
-    with gzip.open("./tags.csv.gz") as istrm:
+    with gzip.open("./db_export/tags.csv.gz") as istrm:
         print("read tags...")
         istrm = io.TextIOWrapper(istrm, encoding="utf8")
         all_tags = list(csv.DictReader(istrm))
@@ -77,8 +77,8 @@ def main():
     tags, indx = zip(*tag_idx.items())
     vecs = D[np.array(indx)]
     tags = np.array(tags)
-    np.savez("./dictionary.npz", tags=tags, vecs=vecs, allow_pickle=False)
-    print("embeddings written to dictionary.npz")
+    np.savez("./index/dictionary.npz", tags=tags, vecs=vecs, allow_pickle=False)
+    print("embeddings written to ./index/dictionary.npz")
 
 
 if __name__ == "__main__":

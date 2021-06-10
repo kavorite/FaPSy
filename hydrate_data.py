@@ -7,8 +7,10 @@ from tqdm import tqdm
 
 def retrieve_archive(archive_type):
     print(f"retrieve {archive_type}...")
+    if not os.path.exists("./db_export"):
+        os.mkdir("./db_export")
     with tqdm(unit_scale=True, unit_divisor=1024, unit="B") as progress:
-        opath = f"./{archive_type}.csv.gz"
+        opath = f"./db_export/{archive_type}.csv.gz"
         if os.path.exists(opath):
             return
         date = (

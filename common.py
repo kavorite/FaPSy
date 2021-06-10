@@ -89,10 +89,11 @@ class PostGraph:
     def load_path(
         cls, root: str, index_path=None, idx_offset=None, dictpath=None, attnpath=None
     ):
-        dictpath = dictpath or os.path.join(os.path.abspath(root), "dictionary.npz")
+        root = os.path.abspath(root)
+        dictpath = dictpath or os.path.join(root, "dictionary.npz")
         dictfile = np.load(dictpath)
         V = dict(zip(dictfile["tags"], dictfile["vecs"]))
-        attnpath = attnpath or os.path.join(os.path.abspath(root), "attenuator.npy")
+        attnpath = attnpath or os.path.join(root, "attenuator.npy")
         A = np.load(attnpath)
         embed = Embedder(A, V)
         index_path = index_path or search_index(root)

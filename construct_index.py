@@ -14,11 +14,11 @@ from common import Embedder
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--offset", type=int, default=1_700_000)
-    parser.add_argument("--dict-file", type=np.load, default="./dictionary.npz")
-    parser.add_argument("--attenuator", type=np.load, default="./attenuator.npy")
+    parser.add_argument("--dict-file", type=np.load, default="./index/dictionary.npz")
+    parser.add_argument("--attenuator", type=np.load, default="./index/attenuator.npy")
     parser.add_argument("--tree-file", default=None)
     args = parser.parse_args()
-    index_name = args.tree_file or f"./posts.skip{args.offset}.annoy.idx"
+    index_name = args.tree_file or f"./index/posts.skip{args.offset}.annoy.idx"
     vocab = dict(zip(args.dict_file["tags"], args.dict_file["vecs"]))
     embed = Embedder(args.attenuator, vocab)
     args.dict_file.close()
@@ -28,7 +28,7 @@ def main():
     csv.field_size_limit(1 << 20)
 
     ann.on_disk_build(index_name)
-    with gzip.open("./posts.csv.gz") as istrm:
+    with gzip.open("./db_export/posts.csv.gz") as istrm:
         istrm = io.TextIOWrapper(istrm, encoding="utf8")
         posts = csv.DictReader(istrm)
         print(f"skip first {args.offset}")
