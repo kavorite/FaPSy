@@ -3,9 +3,9 @@ import io
 import os
 from typing import Callable, Dict, Tuple
 
-import expiringdict
 import pyrogram as tg
 import tensorflow as tf
+from expiringdict import ExpiringDict
 
 from common import PostGraph
 
@@ -26,6 +26,7 @@ CallbackHandler = Callable[[tg.types.CallbackQuery], None]
 query_callbacks: Dict[
     Tuple[UserID, OpName], Tuple[CallbackHandler, tg.types.Message]
 ] = dict()
+filter_cache = ExpiringDict(max_age_seconds=1024, max_len=1 << 20)
 
 
 def register_query_cb(
@@ -82,17 +83,14 @@ class TagFilter:
         self.model.save(self.save_path)
 
 
-filters = expiringdict(max_age_seconds=1024, max_len=1 << 20)
-
-
 def filter_path(uid):
     return (f"./user_pref/{uid}",)
 
 
 def filter_for(uid):
-    if uid not in filters:
-        filters[uid] = TagFilter(graph, filter_path(uid))
-    return filters[uid]
+    if uid not in filter_cache:
+        filter_cache[uid] = TagFilter(graph, filter_path(uid))
+    return filter_cache[uid]
 
 
 @bot.on_message(filters=tg.filters.command(["start"]))
@@ -155,7 +153,6 @@ async def confirm_drop(client: tg.Client, msg: tg.types.Message):
             await reply.edit_text("Bombs away. Have a good one.")
         except Exception as err:
             await reply.edit_text(f"error: {err}")
-        pass
 
     register_query_cb(msg.from_user.id, "drop_prefs", reply_to=msg, handler=on_confirm)
 
