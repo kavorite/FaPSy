@@ -1,7 +1,8 @@
 import asyncio
 import io
 import os
-from typing import Callable, Dict, Tuple
+from dataclasses import dataclass
+from typing import Awaitable, Callable, Optional
 
 import pyrogram as tg
 import tensorflow as tf
@@ -13,26 +14,57 @@ bot = tg.Client(os.environ["BOT_TOKEN"])
 graph = PostGraph.load_path(".")
 
 
-class UserID(int):
-    pass
+@dataclass
+class CallbackKey:
+    user_id: int
+    op_name: str
 
 
-class OpName(str):
-    pass
+@dataclass
+class CallbackConfig:
+    handler: Callable[[tg.types.CallbackQuery], Awaitable[None]]
+    reply_to: Optional[tg.types.Message]
 
 
-CallbackHandler = Callable[[tg.types.CallbackQuery], None]
+class QueryCBDispatcher:
+    __ledger = dict()
 
-query_callbacks: Dict[
-    Tuple[UserID, OpName], Tuple[CallbackHandler, tg.types.Message]
-] = dict()
-filter_cache = ExpiringDict(max_age_seconds=1024, max_len=1 << 20)
+    def __init__(self):
+        self.__ledger = self.__class__.__ledger
+
+    def register(self, key: CallbackKey, cfg: CallbackConfig):
+        self.__ledger[key] = cfg
+
+    def handle(self, client: tg.Client, query: tg.types.CallbackQuery):
+        key = CallbackKey(query.from_user.id, query.data)
+        if key in self.__ledger:
+            cfg = self.__ledger.pop(key)
+
+            async def try_op():
+                try:
+                    if callable(cfg.handler):
+                        await cfg.handler(query)
+                except Exception as err:
+                    status = (
+                        f"Error during <code>{key.op_name}</code>. Backtrace attached."
+                    )
+                    backtrace = io.BytesIO(str(err).encode("utf8"))
+                    setattr(backtrace, "name", "backtrace.txt")
+                    await client.send_document(
+                        query.from_user,
+                        status,
+                        document=backtrace,
+                        parse_mode="html",
+                        reply_to=cfg.reply_to,
+                    )
+
+            asyncio.create_task(try_op)
 
 
-def register_query_cb(
-    user_id, op_name, handler: CallbackHandler, reply_to: tg.types.Message = None
-):
-    query_callbacks[(user_id, op_name)] = (handler, reply_to)
+query_callbacks = QueryCBDispatcher()
+# only cache user data up to the first power of two over 100k for up to a
+# kibisecond
+filter_cache = ExpiringDict(max_age_seconds=1 << 10, max_len=1 << 17)
 
 
 class TagFilter:
@@ -93,6 +125,11 @@ def filter_for(uid):
     return filter_cache[uid]
 
 
+@bot.on_callback_query
+async def dispatch_cb_query(client: tg.Client, query: tg.types.CallbackQuery):
+    query_callbacks.handle(client, query)
+
+
 @bot.on_message(filters=tg.filters.command(["start"]))
 async def welcome(_: tg.Client, msg: tg.types.Message):
     status_paras = """
@@ -146,15 +183,14 @@ async def confirm_drop(client: tg.Client, msg: tg.types.Message):
     async def on_confirm(query: tg.types.CallbackQuery):
         status = "Dropping preferences..."
         reply = await client.send_message(query.from_user.id, status)
-        try:
-            drop = filter_path(query.from_user.id)
-            if os.path.exists(drop):
-                os.remove(drop)
-            await reply.edit_text("Bombs away. Have a good one.")
-        except Exception as err:
-            await reply.edit_text(f"error: {err}")
+        drop = filter_path(query.from_user.id)
+        if os.path.exists(drop):
+            os.remove(drop)
+        await reply.edit_text("Bombs away. Have a good one.")
 
-    register_query_cb(msg.from_user.id, "drop_prefs", reply_to=msg, handler=on_confirm)
+    key = CallbackKey(msg.from_user.id, "drop_prefs")
+    cfg = CallbackConfig(on_confirm, msg)
+    query_callbacks.register(key, cfg)
 
 
 @bot.on_message(filters=tg.filters.command(["about"]))
@@ -170,33 +206,6 @@ async def send_about(client: tg.Client, msg: tg.types.Message):
 @bot.on_message(filters=tg.filters.command(["walk"]))
 async def start_tour():
     pass
-
-
-@bot.on_callback_query
-async def drop_prefs(client: tg.Client, query: tg.types.CallbackQuery):
-    op_name = query.data
-    key = (query.from_user.id, op_name)
-    client.get_history()
-    client.get_chat(query.from_user.id)
-    if key in query_callbacks:
-        handler, reply_to = query_callbacks.pop(key)
-
-        async def try_op():
-            try:
-                await handler(query)
-            except Exception as err:
-                status = f"Error during <code>{op_name}</code>. Backtrace attached."
-                backtrace = io.BytesIO(str(err).encode("utf8"))
-                setattr(backtrace, "name", "backtrace.txt")
-                await client.send_document(
-                    query.from_user,
-                    status,
-                    document=backtrace,
-                    parse_mode="html",
-                    reply_to=reply_to,
-                )
-
-        asyncio.create_task(try_op)
 
 
 bot.send(
