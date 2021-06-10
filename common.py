@@ -62,12 +62,13 @@ class Embedder:
         self.A = attenuator
         self.V = vocab
 
-    def embed_tags(self, tags):
+    def embed_tags(self, tags, weights=None):
         v = np.zeros(self.n_dim)
         k = 0
-        for t in tags:
+        weights = weights or np.ones(self.n_dim)
+        for t, s in zip(tags, weights):
             if t in self.V:
-                v += self.V[t]
+                v += s * self.V[t]
                 k += 1
         if k != 0:
             v /= k
