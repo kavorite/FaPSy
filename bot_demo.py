@@ -35,7 +35,7 @@ class QueryCBDispatcher:
     def register(self, key: CallbackKey, cfg: CallbackConfig):
         self.__ledger[key] = cfg
 
-    def handle(self, client: tg.Client, query: tg.types.CallbackQuery):
+    def dispatch(self, client: tg.Client, query: tg.types.CallbackQuery):
         key = CallbackKey(query.from_user.id, query.data)
         if key in self.__ledger:
             cfg = self.__ledger.pop(key)
@@ -58,7 +58,7 @@ class QueryCBDispatcher:
                         reply_to=cfg.reply_to,
                     )
 
-            asyncio.create_task(try_op)
+            asyncio.create_task(try_op())
 
 
 query_callbacks = QueryCBDispatcher()
@@ -127,7 +127,7 @@ def filter_for(uid):
 
 @bot.on_callback_query
 async def dispatch_cb_query(client: tg.Client, query: tg.types.CallbackQuery):
-    query_callbacks.handle(client, query)
+    query_callbacks.dispatch(client, query)
 
 
 @bot.on_message(filters=tg.filters.command(["start"]))
@@ -153,7 +153,7 @@ async def welcome(_: tg.Client, msg: tg.types.Message):
         )
         await msg.reply(status)
     else:
-        await start_tour()
+        asyncio.create_task(start_tour())
 
 
 @bot.on_message(filters=tg.filters.command(["stop"]))
