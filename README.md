@@ -19,7 +19,7 @@ the end in the [markdown source][this].
    [a database dump][db_export].
 2. run `embed_tags.py`. This will give you dense vectors for tags using
    factorization of a pointwise mutual information matrix derived from their
-   cooccurrences and dump embeddings á la [LSI][stop_using_word2vec] to
+   cooccurrences and dump [LSI][stop_using_word2vec] embeddings to
    `./index/dictionary.npz`. These are a bit of an idiosyncrasy, because in
    my case, each tag cooccurs with other tags to form the distributional
    representation of each term as a "document," but particularly for this
