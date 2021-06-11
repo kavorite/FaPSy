@@ -1,6 +1,6 @@
-## TaPSy for E621
+## FaPSy for E621
 
-_(**T**raversal **a**nd **P**ersonalization **Sy**stem)_
+_(**F**oraging **a**nd **P**ersonalization **Sy**stem)_
 
 This repository is a suite of tools for generating a graph from E621 metadata.
 If you run each script in the top-level directory, you will be capable of
