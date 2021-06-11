@@ -422,6 +422,7 @@ async def walk_step(client: tg.Client, msg: tg.types.Message, last_vibecheck=Non
     await client.send(
         tg.raw.messages.SendMedia(
             tg.raw.types.InputMediaDocumentExternal(post["sample"]["url"]),
+            message=endpoint[:-5],
             peer=await client.resolve_peer(msg.from_user.id),
             reply_to_msg_id=reply.id,
             random_id=tg.session.internals.MsgId(),
