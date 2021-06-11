@@ -1,4 +1,6 @@
-## e6graph
+## TaPSy for E621
+
+_(**T**raversal **a**nd **P**ersonalization **Sy**stem)_
 
 This repository is a suite of tools for generating a graph from E621 metadata.
 If you run each script in the top-level directory, you will be capable of
@@ -12,8 +14,6 @@ throughout this document at my discretion. You can find a comprehensive list at
 the end in the [markdown source][this].
 
 ### The approach
-
-#### (in excruciating detail)
 
 1. run `hydrate_data.py`. This downloads necessary archives from
    [a database dump][db_export].
@@ -63,4 +63,4 @@ the end in the [markdown source][this].
 [pixie]: https://medium.com/pinterest-engineering/introducing-pixie-an-advanced-graph-based-recommendation-system-e7b4229b664b
 [phash]: http://www.hackerfactor.com/blog/index.php?/archives/432-Looks-Like-It.html
 [stop_using_word2vec]: https://multithreaded.stitchfix.com/blog/2017/10/18/stop-using-word2vec/
-[this]: /kavorite/e6graph/blob/main/README.md
+[this]: /kavorite/tapsy/blob/main/README.md
