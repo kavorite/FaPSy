@@ -6,7 +6,9 @@ import urllib.error
 import urllib.request
 
 import annoy
+import cv2
 import numpy as np
+import scipy.fftpack
 
 
 class E621Error(Exception):
@@ -54,13 +56,34 @@ def pagerank(A, alpha=0.85):
 
 
 class Embedder:
-    def __init__(self, attenuator: np.ndarray, vocab: dict):
+    def __init__(
+        self,
+        dictionary: dict,
+        attenuator: np.ndarray = None,
+        recognizer: np.ndarray = None,
+    ):
         n = None
-        embeddings = iter(vocab.values())
+        embeddings = iter(dictionary.values())
         n = next(embeddings).shape[0]
         self.n_dim = n
         self.A = attenuator
-        self.V = vocab
+        self.R = recognizer
+        self.V = dictionary
+
+    def embed_img(self, img_str, highfreq_factor=4):
+        if self.recognizer is None:
+            status = """
+            cannot map images to label space without pretrained recognizer
+            """
+            raise ValueError(" ".join(status.split()))
+        hash_size = int(np.ceil(np.sqrt(self.n_dim ** 2)))
+        img_str = np.frombuffer(img_str, dtype=np.uint8)
+        img = cv2.imdecode(img_str, cv2.IMREAD_GRAY)
+        dim = hash_size * highfreq_factor
+        img = cv2.resize(img, (dim, dim))
+        dct = scipy.fftpack.dct(scipy.fftpack.dct(img, axis=0), axis=1)
+        lo = dct[:hash_size, :hash_size]
+        return lo.flatten()
 
     def embed_tags(self, tags, weights=None):
         v = np.zeros(self.n_dim)
@@ -72,7 +95,9 @@ class Embedder:
                 k += 1
         if k != 0:
             v /= k
-        v = self.A @ v.reshape(1, self.n_dim)
+        if self.A is not None:
+            v = self.A @ v
+        v *= weights
         return v.flatten()
 
     def __call__(self, tags):

@@ -1,11 +1,13 @@
 ## e6graph
 
-This repository is a suite of tools for generating a graph from E621 metadata
-for sublinear querying of a post's neighbors by ID, as part of [`e6px`][e6px],
-an implementation of a graph-based, online recommender system inspired by
-[`pinterest/pixie`][pixie]. To efficiently sample candidates from the local
-"neighborhood" of a query node for further filtering, we need to encode the
-topology of the network for programs to read very quickly. So here goes.
+This repository is a suite of tools for generating a graph from E621 metadata.
+If you run each script in the top-level directory, you will be capable of
+deploying an implementation of a graph-based, online recommender system
+inspired by [`pinterest/pixie`][pixie]. To efficiently sample candidates from
+the local "neighborhood" of a query node for further filtering, we need to
+encode the topology of the network for programs to read very quickly, for which
+I chose to use [`spotify/annoy`][annoy], and also employed techniques from
+[Krawetz][phash], and [Arora, et al.][alacarte].
 
 Basically the way you use all this stuff is:
 
@@ -13,17 +15,17 @@ Basically the way you use all this stuff is:
    [a database dump][db_export].
 2. run `embed_tags.py`. This will give you dense vectors for tags using
    factorization of a pointwise mutual information matrix derived from their
-   cooccurrences and `pickle.dump` them as a `tuple` in `./dictionary.pkl`.
+   cooccurrences and dump the embeddings to `./index/dictionary.npz`.
 3. run `solve_attenuator.py`. This solves a least-squares regression problem to
-   produce a linear operator which is good for predicting rare tags from blobs
+   induce a linear operator which is good for predicting rare tags from blobs
    of common ones. This is useful both for constructing and querying the graph:
-   normally when embeddings are produced by averaging, signal is lost because
-   dissonant noise cancels out most of the semantic information. The attenuator
-   is computed and used during one-shot embedding of tagsets to minimize this 
-   effect. Thanks to [Arora, et al.][alacarte] for the tech.
-4. run `construct_index.py`. This will build an index file that can be queried
-   for the **attenuated mean** of the tag-vectors for any given post using
-   [`spotify/annoy`][annoy], yielding the post's top `k` approximate nearest
+   normally when embeddings are produced by averaging tag vectors, signal is
+   lost because dissonant noise cancels out most of the semantic information.
+   The attenuator is computed and used during one-shot embedding of tagsets to
+   minimize this effect. Thanks to [Arora, et al.][alacarte] for the tech.
+4. run `construct_index.py`. This will build a [`spotify/annoy`][annoy] index
+   file that can be queried for the **attenuated mean** of the tag-vectors for
+   any given post using `annoy`, yielding the post's top `k` approximate nearest
    neighbors in sublinear time. Its output IDs will need to be summed with the
    offset to actually resolve to E621 posts because `annoy` allocates space for
    all IDs in the keyspace up to and including the maximum, even if you don't
@@ -36,10 +38,17 @@ Basically the way you use all this stuff is:
    space. But all of them are also more difficult to use, feature worse
    documentation, and cost more compute. `annoy` is the best, at least without
    domain-specific optimization for our use-case or use of extremely powerful
-   hardware. Trust me on this.
+   hardware.
+5. run `solve_recognizer.py`. This is technically not essential, but it's what
+   allows arbitrary images to be embedded in the same feature space as their
+   tags without use of an image-query database. It learns a _separate_ new
+   linear operator which maps the discrete cosine transforms of horizontal and
+   vertical image scan-line signals to their attenuated tag embeddings, allowing
+   any image vector obtained in the same way to be used in a content-based
+   nearest-neighbors query. Thanks to [Krawetz][phash] for this tech.
 
 [alacarte]: http://www.offconvex.org/2018/09/18/alacarte/
 [annoy]: https://github.com/spotify/annoy
 [db_export]: https://e621.net/db_export/
 [pixie]: https://medium.com/pinterest-engineering/introducing-pixie-an-advanced-graph-based-recommendation-system-e7b4229b664b
-[e6px]: https://github.com/kavorite/e6px
+[phash]: http://www.hackerfactor.com/blog/index.php?/archives/432-Looks-Like-It.html
