@@ -7,16 +7,25 @@ inspired by [`pinterest/pixie`][pixie]. To efficiently sample candidates from
 the local "neighborhood" of a query node for further filtering, we need to
 encode the topology of the network for programs to read very quickly, for which
 I chose to use [`spotify/annoy`][annoy], and also employed techniques from
-[Krawetz][phash], and [Arora, et al.][alacarte].
+[Krawetz][phash], and [Arora, et al.][alacarte]. I'll keep inlining references
+throughout this document at my discretion. You can find a comprehensive list at
+the end in the [markdown source][this].
 
-Basically the way you use all this stuff is:
+### The approach
+
+#### (in excruciating detail)
 
 1. run `hydrate_data.py`. This downloads necessary archives from
    [a database dump][db_export].
 2. run `embed_tags.py`. This will give you dense vectors for tags using
    factorization of a pointwise mutual information matrix derived from their
-   cooccurrences and dump the embeddings to `./index/dictionary.npz`.
-3. run `solve_attenuator.py`. This solves a least-squares regression problem to
+   cooccurrences and dump embeddings á la [LSI][stop_using_word2vec] to
+   `./index/dictionary.npz`. These are a bit of an idiosyncrasy, because in
+   my case, each tag cooccurs with other tags to form the distributional
+   representation of each term as a "document," but particularly for this
+   application, I can't think of any reason this isn't an appropriate
+   formulation.
+3. run `solve_attenuator.py`. This solves a least-squares optimization to
    induce a linear operator which is good for predicting rare tags from blobs
    of common ones. This is useful both for constructing and querying the graph:
    normally when embeddings are produced by averaging tag vectors, signal is
@@ -39,16 +48,19 @@ Basically the way you use all this stuff is:
    documentation, and cost more compute. `annoy` is the best, at least without
    domain-specific optimization for our use-case or use of extremely powerful
    hardware.
-5. run `solve_recognizer.py`. This is technically not essential, but it's what
-   allows arbitrary images to be embedded in the same feature space as their
-   tags without use of an image-query database. It learns a _separate_ new
-   linear operator which maps the discrete cosine transforms of horizontal and
-   vertical image scan-line signals to their attenuated tag embeddings, allowing
-   any image vector obtained in the same way to be used in a content-based
-   nearest-neighbors query. Thanks to [Krawetz][phash] for this tech.
+5. run `solve_recognizer.py`. This is technically not essential, but the bot
+   demo won't work without it: it's what allows arbitrary images to be embedded
+   in the same feature space as their tags without use of an image-query
+   database. It learns a _separate_ new linear operator which maps the discrete
+   cosine transforms of horizontal and vertical image scan-line signals to their
+   attenuated tag embeddings, allowing any image vector obtained in the same way
+   to be used in a content-based nearest-neighbors query. Thanks to
+   [Dr. Krawetz][phash] for this tech.
 
 [alacarte]: http://www.offconvex.org/2018/09/18/alacarte/
 [annoy]: https://github.com/spotify/annoy
 [db_export]: https://e621.net/db_export/
 [pixie]: https://medium.com/pinterest-engineering/introducing-pixie-an-advanced-graph-based-recommendation-system-e7b4229b664b
 [phash]: http://www.hackerfactor.com/blog/index.php?/archives/432-Looks-Like-It.html
+[stop_using_word2vec]: https://multithreaded.stitchfix.com/blog/2017/10/18/stop-using-word2vec/
+[this]: /kavorite/e6graph/blob/main/README.md
