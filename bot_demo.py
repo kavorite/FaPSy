@@ -5,11 +5,11 @@ import os
 from collections import deque
 from typing import Awaitable, Callable, Dict, Iterable, Optional, Union
 
+import aiohttp
 import numpy as np
 import pyrogram as tg
 import tensorflow as tf
 from expiringdict import ExpiringDict
-from tensorflow.python.types.core import Value
 
 import pixie
 from common import PostGraph
@@ -314,10 +314,13 @@ async def confirm_drop(client: tg.Client, msg: tg.types.Message):
         for drop in drop_cbs:
             del query_callbacks.ledger[drop]
 
+    async def on_cancel(_: tg.types.CallbackQuery):
+        await client.send_message(client.from_user.id, "Data kept.")
+
     markup = query_callbacks.inline_prompt(
         {
             "drop_data": CBCfg(on_confirm, "⚠ Please drop my data."),
-            "keep_data": CBCfg(lambda: None, "✓ Please keep my data."),
+            "keep_data": CBCfg(on_cancel, "✓ Please keep my data."),
         }
     )
     await msg.reply(status, reply_markup=markup)
@@ -398,10 +401,32 @@ async def walk_step(client: tg.Client, msg: tg.types.Message, last_vibecheck=Non
     traversal = pixie.Traversal(query_neighbors, query_user_pref)
     likes = list(prefs.visit.likes())
     tour = pixie.random_walk(likes, traversal)
-    prompts, counts = zip(*tour)
+    visits, counts = zip(*tour)
     counts = np.array(counts)
-    prompt = np.array(prompts, dtype=object)
-    step = prompt[np.argmax(counts)]
+    visits = np.array(visits, dtype=object)
+    query = visits[np.argmax(counts)]
+    post_id = graph.neighbors(query)[0]
+    async with aiohttp.ClientSession() as http:
+        endpoint = f"https://e621.net/posts/{post_id}.json"
+        async with http.get(
+            endpoint,
+            headers={"User-Agent": "e6tag by https://github.com/kavorite"},
+        ) as rsp:
+            post = await rsp.json()
+            if "success" in post and not post["success"]:
+                status = (
+                    f"fetch [/posts/{post_id}]({endpoint[:-5]}): " f"{post['reason']}"
+                )
+                await reply.edit_text(status, parse_mode="markdown")
+                return
+    await client.send(
+        tg.raw.messages.SendMedia(
+            tg.raw.types.InputMediaDocumentExternal(post["sample"]["url"]),
+            peer=await client.resolve_peer(msg.from_user.id),
+            reply_to_msg_id=reply.id,
+            random_id=tg.session.internals.MsgId(),
+        )
+    )
     vibechecks = [
         "Am I good? Or am I good?",
         "I'm feeling lucky.",
@@ -416,11 +441,11 @@ async def walk_step(client: tg.Client, msg: tg.types.Message, last_vibecheck=Non
     await reply.edit_text(vibecheck)
 
     async def rate_if_hot(_: tg.types.CallbackQuery):
-        prefs.learn_rating(step, 1.0)
+        prefs.learn_rating(query, 1.0)
         asyncio.create_task(walk_step(client, msg, vibecheck))
 
     async def rate_if_not(_: tg.types.CallbackQuery):
-        prefs.learn_rating(step, 0.0)
+        prefs.learn_rating(query, 0.0)
         asyncio.create_task(walk_step(client, msg, vibecheck))
 
     async def end_tour(_: tg.types.CallbackQuery):
