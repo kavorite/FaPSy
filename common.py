@@ -4,6 +4,7 @@ import os
 import re
 import urllib.error
 import urllib.request
+from typing import Iterable
 
 import annoy
 import cv2
@@ -100,8 +101,19 @@ class Embedder:
         v *= weights
         return v.flatten()
 
-    def __call__(self, tags):
-        return self.embed_tags(tags)
+    def __call__(self, tags_or_image):
+        if isinstance(tags_or_image, bytes):
+            return self.embed_img(tags_or_image)
+        elif isinstance(tags_or_image, str):
+            return self.embed_tags(tags_or_image.split())
+        elif isinstance(tags_or_image, Iterable):
+            return self.embed_tags(tags_or_image)
+        else:
+            status = """
+                inputs to embed() must be tagsets or image content in a
+                cv2-supported format
+                """
+            raise TypeError(" ".join(status.split()))
 
 
 class PostGraph:
@@ -129,21 +141,14 @@ class PostGraph:
         index.load(index_path)
         return cls(index, embed, offset)
 
-    def tag_neighbors(self, tags, n, *args, **kwargs):
-        q = self.embed(tags)
-        ids = self.index.get_nns_by_vector(q, n, *args, **kwargs)
-        return np.array(ids) + self.offset
+    def neighbors(self, query, n, *args, **kwargs):
+        q = self.embed(query)
+        ids, *rest = self.index.get_nns_by_vector(q, n, *args, **kwargs)
+        ids = np.array(ids) + self.offset
+        return (ids, *rest) if rest else ids
 
-    def post_neighbors(self, post_id, n, *args, **kwargs):
-        try:
-            ids = self.index.get_nns_by_item(post_id, n, *args, **kwargs)
-            return np.array(ids) + self.offset
-        except IndexError:
-            post = fetch_post(post_id)
-            return self.tag_neighbors(self, post["tag_string"])
-
-    def post_centroids(self, post_ids, return_weights=True):
-        neighborhood = np.array(sorted(set(post_ids)))
+    def centroids(self, query_nodes, return_weights=True):
+        neighborhood = np.array(sorted(set(query_nodes)))
         n = len(neighborhood)
         A = np.zeros((n, n))
         I = {p: i for i, p in enumerate(neighborhood)}
