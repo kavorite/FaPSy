@@ -16,38 +16,6 @@ class E621Error(Exception):
     pass
 
 
-def index_offset(index_path):
-    match = re.search(r"[0-9]+", index_path)
-    if match:
-        return int(match[0])
-
-
-def search_index(root):
-    idx_paths = glob.glob(f"{root}/posts.skip[0-9]*.annoy.idx")
-    idx_paths += glob.glob(f"{root}/*.annoy.idx")
-    idx_paths = np.array(idx_paths, dtype=object)
-    if not idx_paths:
-        return
-    scores = []
-    for idx in idx_paths:
-        score = 1.0
-        score *= np.log(os.stat(idx).st_mtime)
-        score *= index_offset(idx) or 1.0
-        scores.append(score)
-    return idx_paths[np.argmin(scores)]
-
-
-def fetch_post(post_id):
-    req = urllib.request.Request(f"https://e621.net/posts/{post_id}.json")
-    req.add_header("User-Agent", "e6graph by kavorite <iseurie@gmail.com>")
-    with urllib.request.urlopen(req) as rsp:
-        payload = json.load(rsp)
-        try:
-            return payload["post"]
-        except urllib.error.HTTPError as err:
-            raise E621Error(payload) from err
-
-
 def pagerank(A, alpha=0.85):
     A_hat = A.sum(axis=-1)[:, None]
     A_hat = alpha * A_hat + (1 - alpha) / A_hat.shape[0]
@@ -56,37 +24,62 @@ def pagerank(A, alpha=0.85):
     return centralities
 
 
-class Embedder:
+class EmbeddingObjective:
+    def __init__(self, dictfile=np.load("./index/dictionary.npz")):
+        self.tags = dictfile["tags"]
+        self.frqs = dict(zip(self.tags, dictfile["frqs"]))
+        self.vecs = dict(zip(self.tags, dictfile["vecs"]))
+
+    def embed(self, tags):
+        tags = [t for t in tags if t in self.vecs]
+        if not tags:
+            return None
+        frqs = [self.frqs[t] for t in tags]
+        return self.vecs[tags[np.argmin(frqs)]]
+
+    def __call__(self, tags):
+        return self.embed(tags)
+
+
+class Recognizer:
+    def __init__(self, thumb_dim, highfreq_factor, recognizer: np.ndarray = None):
+        self.thumb_dim = thumb_dim
+        self.highfreq_factor = highfreq_factor
+        self.R = recognizer
+
+    def embed(self, img_str):
+        d = self.thumb_dim
+        dim = np.round(d * self.highfreq_factor).astype(int)
+        img = np.frombuffer(img_str, dtype=np.uint8)
+        img = cv2.imdecode(img, cv2.IMREAD_GRAYSCALE)
+        img = cv2.resize(img, (dim, dim))
+        dct = scipy.fftpack.dct(scipy.fftpack.dct(img, axis=0), axis=1)
+        low = dct[:d, :d]
+        x = low.flatten()
+        if self.R is not None:
+            x = self.R @ x
+        return x
+
+    def phash(self, img_str):
+        x = self.embed(img_str)
+        mask = x > np.median(x)
+        return mask
+
+    def __call__(self, img_str):
+        return self.embed(img_str)
+
+
+class Attenuator:
     def __init__(
         self,
         dictionary: dict,
         attenuator: np.ndarray = None,
-        recognizer: np.ndarray = None,
     ):
-        n = None
-        embeddings = iter(dictionary.values())
-        n = next(embeddings).shape[0]
-        self.n_dim = n
+        self.n_dim = min(attenuator.shape)
         self.A = attenuator
-        self.R = recognizer
         self.V = dictionary
 
-    def embed_img(self, img_str, highfreq_factor=4):
-        if self.recognizer is None:
-            status = """
-            cannot map images to label space without pretrained recognizer
-            """
-            raise ValueError(" ".join(status.split()))
-        hash_size = int(np.ceil(np.sqrt(self.n_dim ** 2)))
-        img_str = np.frombuffer(img_str, dtype=np.uint8)
-        img = cv2.imdecode(img_str, cv2.IMREAD_GRAY)
-        dim = hash_size * highfreq_factor
-        img = cv2.resize(img, (dim, dim))
-        dct = scipy.fftpack.dct(scipy.fftpack.dct(img, axis=0), axis=1)
-        lo = dct[:hash_size, :hash_size]
-        return lo.flatten()
-
-    def embed_tags(self, tags, weights=None):
+    def embed(self, tags, weights=None):
         v = np.zeros(self.n_dim)
         k = 0
         weights = weights or np.ones(self.n_dim)
@@ -101,45 +94,48 @@ class Embedder:
         v *= weights
         return v.flatten()
 
-    def __call__(self, tags_or_image):
-        if isinstance(tags_or_image, bytes):
-            return self.embed_img(tags_or_image)
-        elif isinstance(tags_or_image, str):
-            return self.embed_tags(tags_or_image.split())
-        elif isinstance(tags_or_image, Iterable):
-            return self.embed_tags(tags_or_image)
-        else:
-            status = """
-                inputs to embed() must be tagsets or image content in a
-                cv2-supported format
-                """
-            raise TypeError(" ".join(status.split()))
+    def __call__(self, tags, weights=None):
+        if isinstance(tags, str):
+            tags = tags.split()
+        return self.embed(tags, weights)
 
 
 class PostGraph:
-    def __init__(self, index: annoy.AnnoyIndex, embed: Embedder, offset: int = 0):
-        self.index = index
-        self.embed = embed
-        self.offset = offset
+    @staticmethod
+    def index_offset(index_path):
+        match = re.search(r"[0-9]+", index_path)
+        if match:
+            return int(match[0])
 
     @classmethod
-    def load_path(
-        cls, root: str, index_path=None, idx_offset=None, dictpath=None, attnpath=None
-    ):
+    def search_index(cls, root):
+        idx_paths = glob.glob(f"{root}/posts.skip[0-9]*.annoy.idx")
+        idx_paths += glob.glob(f"{root}/*.annoy.idx")
+        if not idx_paths:
+            return
+        idx_paths = np.array(idx_paths, dtype=object)
+        scores = []
+        for idx in idx_paths:
+            score = 1.0
+            score *= np.log(os.stat(idx).st_mtime)
+            score *= cls.index_offset(idx) or 1.0
+            scores.append(score)
+        return idx_paths[np.argmin(scores)]
+
+    def __init__(self, root: str, offset: int = 0):
         root = os.path.abspath(root)
-        dictpath = dictpath or os.path.join(root, "dictionary.npz")
+        dictpath = os.path.join(root, "dictionary.npz")
         dictfile = np.load(dictpath)
         V = dict(zip(dictfile["tags"], dictfile["vecs"]))
-        attnpath = attnpath or os.path.join(root, "attenuator.npy")
-        A = np.load(attnpath)
-        embed = Embedder(A, V)
-        index_path = index_path or search_index(root)
-        if not index_path:
-            raise ValueError(f"no index files found in")
-        offset = idx_offset or index_offset(index_path or "") or 0
-        index = annoy.AnnoyIndex(embed.n_dim, metric="angular")
-        index.load(index_path)
-        return cls(index, embed, offset)
+        A = np.load(os.path.join(root, "attenuator.npy"))
+        R = np.load(os.path.join(root, "recognizer.npy"))
+        index_path = self.search_index(root)
+
+        self.root = root
+        self.offset = offset or self.index_offset(index_path) or 0
+        self.embed = Attenuator(V, A, R)
+        self.index = annoy.AnnoyIndex(self.embed.n_dim, metric="angular")
+        self.index.load(os.path.join(root, index_path))
 
     def neighbors(self, query, n, *args, **kwargs):
         q = self.embed(query)
@@ -147,8 +143,8 @@ class PostGraph:
         ids = np.array(ids) + self.offset
         return (ids, *rest) if rest else ids
 
-    def centroids(self, query_nodes, return_weights=True):
-        neighborhood = np.array(sorted(set(query_nodes)))
+    def centroids(self, query_points, return_weights=True):
+        neighborhood = np.array(sorted(set(query_points)))
         n = len(neighborhood)
         A = np.zeros((n, n))
         I = {p: i for i, p in enumerate(neighborhood)}

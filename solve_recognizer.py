@@ -11,29 +11,13 @@ import scipy.fftpack
 import tqdm
 from requests_futures.sessions import FuturesSession
 
-from common import Embedder
+from common import EmbeddingObjective, Recognizer
 from embed_tags import tag_hit_generator, tags_by_freq
 
 csv.field_size_limit(1 << 20)
 
 
-def img_embed(img_str, hash_size=8, highfreq_factor=4):
-    dim = hash_size * highfreq_factor
-    img = np.frombuffer(img_str, dtype=np.uint8)
-    img = cv2.imdecode(img, cv2.IMREAD_GRAYSCALE)
-    img = cv2.resize(img, (dim, dim))
-    dct = scipy.fftpack.dct(scipy.fftpack.dct(img, axis=0), axis=1)
-    lo = dct[:hash_size, :hash_size]
-    return lo.flatten()
-
-
-def phash(img_str, hash_size=8, highfreq_factor=4):
-    x = img_embed(img_str, hash_size, highfreq_factor)
-    mask = x > np.median(x)
-    return mask
-
-
-def post_content(posts, concurrency=32):
+def preview_content(posts, concurrency=32):
     posts_ready = threading.Semaphore()
     output = queue.Queue(maxsize=concurrency)
     client = FuturesSession(ft.ThreadPoolExecutor(concurrency))
@@ -57,7 +41,7 @@ def post_content(posts, concurrency=32):
                 yield output.get()
 
 
-def prep_posts(posts):
+def ensure_preview(posts):
     for post in posts:
         md5 = post["md5"]
         ext = post["file_ext"] or "jpg"
@@ -66,7 +50,7 @@ def prep_posts(posts):
                 r"https://static1.e621.net/data/preview/"
                 f"{md5[0:2]}/{md5[2:4]}/{md5}.{ext}"
             )
-            yield {"id": post["id"], "link": link, "tags": post["tag_string"].split()}
+            yield {"link": link, **post}
 
 
 def main():
@@ -74,21 +58,15 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--k-tags", type=int, default=2048)
-    parser.add_argument("--hash-size", type=int, default=8)
+    parser.add_argument("--thumb-dim", type=int, default=8)
     parser.add_argument("--highfreq-factor", type=int, default=4)
-    parser.add_argument("--dictionary", type=np.load, default="./index/dictionary.npz")
+    parser.add_argument(
+        "--dictionary", type=EmbeddingObjective, default="./index/dictionary.npz"
+    )
     args = parser.parse_args()
-    dictfile = args.dictionary
-    dictionary = dict(zip(dictfile["tags"], dictfile["vecs"]))
+    naive_recognizer = Recognizer(args.thumb_dim, args.highfreq_factor)
+    objective = args.dictionary
     all_tags = tags_by_freq(args.k_tags)
-    tag_indx = {tag["name"]: i for i, tag in enumerate(all_tags)}
-
-    def tag_embed(tags):
-        tags = [t for t in tags if t in tag_indx]
-        if not tags:
-            return None
-        idxs = [tag_indx[t] for t in tags]
-        return dictionary[tags[np.argmin(idxs)]]
 
     image_features = []
     image_taggings = []
@@ -96,16 +74,14 @@ def main():
     print("read tags...")
     all_tags = [tag["name"] for tag in tags_by_freq(args.k_tags)]
     print("find post candidates...")
-    posts = list(prep_posts(tag_hit_generator(all_tags)))
-    hs = args.hash_size
-    hf = args.highfreq_factor
+    posts = list(ensure_preview(tag_hit_generator(all_tags)))
     print("embed image previews; embed post tags...")
-    for post, image_str in tqdm.tqdm(post_content(posts), total=len(posts)):
-        y = tag_embed(post["tags"])
+    for post, image_str in tqdm.tqdm(preview_content(posts), total=len(posts)):
+        y = objective(post["tag_string"].split())
         if y is None:
             continue
         try:
-            x = img_embed(image_str, hs, hf)
+            x = naive_recognizer(image_str, args.thumb_dim, args.highfreq_factor)
         except cv2.error:
             continue
         image_features.append(x)
@@ -114,8 +90,13 @@ def main():
     Y = np.vstack(image_taggings)
     print("solve for recognizer...")
     R, *_ = np.linalg.lstsq(X, Y, rcond=None)
-    opath = "./index/recognizer.npy"
-    np.save(opath, R)
+    opath = "./index/recognizer.npz"
+    np.savez(
+        opath,
+        recognizer=R,
+        thumb_dim=args.thumb_dim,
+        highfreq_factor=args.highfreq_factor,
+    )
     print(f"recognizer written to {opath}")
 
 

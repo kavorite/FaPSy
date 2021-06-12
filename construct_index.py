@@ -8,7 +8,7 @@ import annoy
 import numpy as np
 from tqdm import tqdm
 
-from common import Embedder
+from common import Attenuator
 
 
 def main():
@@ -20,7 +20,7 @@ def main():
     args = parser.parse_args()
     index_name = args.tree_file or f"./index/posts.skip{args.offset}.annoy.idx"
     vocab = dict(zip(args.dict_file["tags"], args.dict_file["vecs"]))
-    embed = Embedder(args.attenuator, vocab)
+    embed = Attenuator(vocab, attenuator=args.attenuator)
     args.dict_file.close()
 
     print("embed posts...")
