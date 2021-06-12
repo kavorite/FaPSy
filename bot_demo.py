@@ -1,9 +1,9 @@
 import asyncio
 import dataclasses
-import io
 import os
 from collections import deque
-from typing import Awaitable, Callable, Dict, Iterable, Optional, Union
+from typing import Awaitable, Callable, Dict, List, Optional, Union
+from urllib.request import urlopen
 
 import aiohttp
 import numpy as np
@@ -14,22 +14,23 @@ from expiringdict import ExpiringDict
 import pixie
 from common import PostGraph
 
-bot = tg.Client(os.environ["BOT_TOKEN"])
-graph = PostGraph.load_path(".")
+with urlopen("http://checkip.amazonaws.com/") as rsp:
+    remote_host = rsp.read().decode("utf8")[:-1]
+bot = tg.Client(session_name=remote_host, bot_token=os.environ["BOT_TOKEN"])
+graph = PostGraph("./index/")
 tau = (np.sqrt(5) + 1) / 2
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True, eq=True)
 class CBKey:
     user_id: int
     op_name: str
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True, eq=True)
 class CBCfg:
     handler: Callable[[tg.types.CallbackQuery], Awaitable[None]]
     prompt: str
-    reply_to: Optional[tg.types.Message]
 
 
 class QueryDispatcher:
@@ -43,81 +44,63 @@ class QueryDispatcher:
 
     def inline_prompt(
         self,
+        prompt_rows: Union[List[Dict[str, CBCfg]], Dict[str, CBCfg]],
         reply_to: tg.types.Message,
-        prompt_rows: Union[Iterable[Dict[str, CBCfg]], Dict[str, CBCfg]],
     ):
-        if not isinstance(prompt_rows, Iterable):
-            prompt_rows = (prompt_rows,)
+        if not isinstance(prompt_rows, List):
+            prompt_rows = [prompt_rows]
         button_rows = []
         for row in prompt_rows:
             button_row = []
-            for op_name, cfg in enumerate(row.items()):
+            for op_name, cfg in row.items():
                 key = CBKey(reply_to.from_user.id, op_name)
                 button_row.append(
-                    tg.types.InlineKeyboardButton(cfg.prompt, callback_data=key.op_name)
+                    tg.types.InlineKeyboardButton(
+                        text=cfg.prompt, callback_data=key.op_name
+                    )
                 )
-                self.register(key, dataclasses.replace(cfg, reply_to=reply_to))
+                self.register(key, cfg)
             button_rows.append(button_row)
-        return tg.types.InlineKeyboardMarkup(button_rows)
+        return tg.types.InlineKeyboardMarkup(inline_keyboard=button_rows)
 
-    def dispatch(self, client: tg.Client, query: tg.types.CallbackQuery):
+    async def dispatch(self, client: tg.Client, query: tg.types.CallbackQuery):
         key = CBKey(query.from_user.id, query.data)
         if key in self.ledger:
             cfg = self.ledger.pop(key)
 
             async def try_op():
-                try:
-                    if callable(cfg.handler):
-                        await cfg.handler(query)
-                except Exception as err:
-                    status = (
-                        f"Error during <code>{key.op_name}</code>. Backtrace attached."
-                    )
-                    backtrace = io.BytesIO(str(err).encode("utf8"))
-                    setattr(backtrace, "name", "backtrace.txt")
-                    await client.send_document(
-                        query.from_user,
-                        status,
-                        document=backtrace,
-                        parse_mode="html",
-                        reply_to=cfg.reply_to,
-                    )
+                if callable(cfg.handler):
+                    await cfg.handler(query)
 
             asyncio.create_task(try_op())
 
 
 class QueryRegressor:
-    @staticmethod
-    def build_model(A, q):
-        P = tf.linalg.lstsq(A, q)
-        x = tf.linalg.lstsq(P @ q, 1.57)
-        model = tf.keras.Sequential(
-            [
-                tf.keras.layers.Dense(
-                    units=graph.embed.n_dim,
-                    kernel_initializer=tf.keras.initializers.Constant(P),
-                    name="personalization",
-                ),
-                tf.keras.layers.Dense(
-                    units=1,
-                    activation="swish",
-                    name="preference",
-                    kernel_initializer=tf.keras.initializers.Constant(x),
-                ),
-            ]
+    @classmethod
+    def build_model(cls, attenuator, query):
+        attenuator = tf.cast(attenuator, tf.float32)
+        query = tf.cast(query, tf.float32)
+        n_dim = tf.reduce_min(tf.shape(attenuator))
+        inputs = tf.keras.layers.Input([int(n_dim)])
+        personalization = tf.keras.layers.Dense(1, name="personalization")
+        outputs = tf.keras.layers.Activation("swish", name="activation")(
+            personalization(inputs)
         )
+        model = tf.keras.Model(inputs, outputs, name="query_regressor")
+        model.build(n_dim)
+        # make sure the preference sums to 1.27 so that swish outputs 0.99
+        preference = tf.linalg.lstsq(query[None, :], tf.constant(1.27)[None, None])
+        personalization.set_weights([preference[:, None], tf.constant([0])])
         model.compile(
             optimizer=tf.keras.optimizers.Adam(),
-            loss=tf.keras.losses.BinaryCrossentropy(from_logits=True),
+            loss=tf.keras.losses.MSE,
         )
         return model
 
-    def __init__(self, graph: PostGraph, query, save_path):
-        # TODO(kavorite): get rid of blocking I/O
+    def __init__(self, save_path):
+        self.model = None
         if os.path.exists(save_path):
             self.model = tf.keras.models.load_model(save_path)
-        else:
-            self.model = self.build_model(graph.embed.A, query)
         self.save_path = save_path
 
     def __enter__(self, *_):
@@ -125,51 +108,55 @@ class QueryRegressor:
 
     def __exit__(self, *_):
         # TODO(kavorite): get rid of blocking I/O
-        self.model.save(self.save_path)
+        if self.model is not None:
+            self.model.save(self.save_path)
 
     def train(self, query, rating):
+        if self.model is None:
+            self.model = self.build_model(graph.embed.A, query)
         with self:
-            self.model.train_on_batch(query, rating)
+            self.model.train_on_batch(x=query, y=rating)
 
     def infer(self, query):
-        return self.model(query)
+        if self.model is None:
+            return 0.5
+        return float(tf.squeeze(self.model(tf.expand_dims(query, axis=0))))
 
 
 class RatingTape:
-    def __init__(self, save_path, max_len=32, alpha=tau / 2):
+    def __init__(self, save_path, max_len=32, alpha=tau / 2, rvecs=[], rtape=[]):
         self.save_path = save_path
-        self.vecs = deque(max_len)
-        self.tape = deque(max_len)
+        self.rvecs = deque(rvecs, maxlen=int(max_len))
+        self.rtape = deque(rtape, maxlen=int(max_len))
         self.alpha = alpha
 
     def train(self, query, rating):
-        self.vecs.append(query)
-        self.norms.append(np.linalg.norm(query + 1e-16))
-        self.tape.append(rating)
+        self.rvecs.append(query)
+        self.rtape.append(rating)
 
     def infer(self, query):
-        for i, p, s in enumerate(zip(self.vecs, self.tape)):
+        for i, p, s in enumerate(zip(self.rvecs, self.rtape)):
             if np.allclose(query, p):
                 s *= self.alpha ** (len(self.ratings) - i - 1)
                 return s
         return None
 
     def likes(self):
-        for q, s in zip(self.vecs, self.tape):
+        for q, s in zip(self.rvecs, self.rtape):
             if s > 0.5:
                 yield q
 
     def save(self, path=None):
         # TODO(kavorite): get rid of blocking I/O
-        index = np.array(self.index)
-        ratings = np.array(self.ratings)
-        max_len = np.array(self.ratings.max_len)
+        rvecs = np.array(self.rvecs)
+        rtape = np.array(self.rtape)
+        max_len = np.array(self.rvecs.maxlen, dtype=np.int32)
         alpha = np.array(self.alpha)
         np.savez(
             self.save_path or path,
             alpha=alpha,
-            index=index,
-            ratings=ratings,
+            rvecs=rvecs,
+            rtape=rtape,
             max_len=max_len,
             allow_pickle=False,
         )
@@ -178,16 +165,15 @@ class RatingTape:
     def load(cls, save_path):
         # TODO(kavorite): get rid of blocking I/O
         dictfile = np.load(save_path)
-        self = cls(save_path, dictfile["max_len"])
-        self.index = deque(dictfile["index"])
-        self.ratings = deque(dictfile["ratings"])
+        slots = "rvecs", "rtape", "alpha", "max_len"
+        self = cls(save_path, **{k: dictfile[k] for k in slots})
         return self
 
     def __enter__(self, *_):
         return self
 
     def __exit__(self, *_):
-        self.save(self, self.save_path)
+        self.save()
 
 
 class Preferences:
@@ -201,7 +187,7 @@ class Preferences:
         self.save_root = save_root
         self.ident = ident
         self.rater = rater
-        self.visit = visit
+        self.rtape = visit
 
     @staticmethod
     def rater_path(save_root, user_id):
@@ -210,32 +196,32 @@ class Preferences:
     def visit_path(save_root, user_id):
         return os.path.join(save_root, f"{user_id}.visit.npz")
 
+    def initialized(self):
+        return self.rater.model is not None
+
     @classmethod
-    def load(cls, save_root: str, ident: tg.types.User):
-        visit_path = cls.rater_path(save_root, ident.id)
-        rater_path = cls.visit_path(save_root, ident.id)
-        if not os.path.exists(visit_path):
-            raise FileNotFoundError(
-                f"{save_root} contains no rating tape at {visit_path}"
-            )
-        if not os.path.exists(rater_path):
-            raise FileNotFoundError(
-                f"{save_root} contains no embedding regressor at {rater_path}"
-            )
-        rater = QueryRegressor.load(rater_path)
-        visit = RatingTape.load(visit_path)
-        return cls(ident, save_root, rater, visit)
+    def load_else_init(cls, save_root: str, ident: tg.types.User):
+        if not os.path.exists(save_root):
+            os.makedirs(save_root)
+        rtape_path = cls.visit_path(save_root, ident.id)
+        rater_path = cls.rater_path(save_root, ident.id)
+        if os.path.exists(rtape_path):
+            rtape = RatingTape.load(rtape_path)
+        else:
+            rtape = RatingTape(rtape_path)
+        rater = QueryRegressor(rater_path)
+        return cls(ident, save_root, rater, rtape)
 
     def infer_rating(self, query):
-        found = self.visit.get_rating(query)
+        found = self.rtape.get_rating(query)
         if found:
             return found
 
         return self.rater.infer(query)
 
     def learn_rating(self, query, rating):
-        with self.visit:
-            self.visit.train(query, rating)
+        with self.rtape:
+            self.rtape.train(query, rating)
         with self.rater:
             self.rater.train(query, rating)
 
@@ -259,28 +245,29 @@ class PrefManager:
         if uid in self.cache:
             return self.cache[uid]
         else:
-            prefs = Preferences.load(os.path.join(self.save_root, str(ident.id)))
+            save_root = os.path.join(self.save_root, str(ident.id))
+            prefs = Preferences.load_else_init(save_root, ident)
             self.cache[ident.id] = prefs
             return prefs
 
 
 query_callbacks = QueryDispatcher()
-user_preferences = PrefManager()
+user_preferences = PrefManager("./fapsy.cache")
 
 
-@bot.on_callback_query
+@bot.on_callback_query()
 async def dispatch_cb_query(client: tg.Client, query: tg.types.CallbackQuery):
-    query_callbacks.dispatch(client, query)
+    asyncio.create_task(query_callbacks.dispatch(client, query))
 
 
 @bot.on_message(filters=tg.filters.command(["start"]))
 async def welcome(_: tg.Client, msg: tg.types.Message):
     status_paras = """
         Welcome! To start, send me one or more illustrated images of 
-        anthropomorphic characters, or send me a list of tags with /rate
-        `space_delimited search terms`, and I'll use them to begin curating 
-        your selection. You can send me more any time you want, I'll do my
-        best to incorporate your feedback 😊
+        anthropomorphic characters, or send me a list of tags with /avoid or
+        /enjoy `space_delimited search terms`, and I'll use them to begin
+        curating  your selection. You can send me more any time you want, I'll
+        do my best to incorporate your feedback 😊
 
         Once you've sent me one or two images, I can start personalizing your
         experience, and you can begin a new tour with /walk.
@@ -301,15 +288,14 @@ async def confirm_drop(client: tg.Client, msg: tg.types.Message):
     )
 
     async def on_confirm(query: tg.types.CallbackQuery):
-        status = "Dropping preferences..."
-        reply = await client.send_message(query.from_user.id, status)
-        drop = user_preferences.prefs_for(query.from_user.id)
-        if os.path.exists(drop):
-            os.remove(drop)
-        await reply.edit_text("☠ Bombs away. Have a good one.")
+        await query.answer("Dropping preferences...")
+        root = user_preferences.prefs_for(query.from_user).save_root
+        if os.path.exists(root):
+            os.rmdir(root)
+        await client.send_message(msg.from_user.id, "☠ Bombs away. Have a good one.")
         drop_cbs = []
         for key in query_callbacks.ledger.keys():
-            if drop.user_id == msg.from_user.id:
+            if queryy.from_user.id == msg.from_user.id:
                 drop_cbs.append(key)
         for drop in drop_cbs:
             del query_callbacks.ledger[drop]
@@ -319,9 +305,10 @@ async def confirm_drop(client: tg.Client, msg: tg.types.Message):
 
     markup = query_callbacks.inline_prompt(
         {
-            "drop_data": CBCfg(on_confirm, "⚠ Please drop my data."),
-            "keep_data": CBCfg(on_cancel, "✓ Please keep my data."),
-        }
+            "drop_data": CBCfg(on_confirm, "Okay."),
+            "keep_data": CBCfg(on_cancel, "Don't."),
+        },
+        reply_to=msg,
     )
     await msg.reply(status, reply_markup=markup)
 
@@ -330,18 +317,31 @@ async def confirm_drop(client: tg.Client, msg: tg.types.Message):
 async def send_about(client: tg.Client, msg: tg.types.Message):
     author, *_ = await client.get_users([369922275])
     status = (
-        f'from <a href="tg://resolve?domain={author.username}">'
-        f"{author.first_name}</a> with 💕"
+        f"[FaPSy](https://github.com/kavorite/FaPSy) is from"
+        f" [{author.first_name}](tg://resolve?domain={author.username})"
+        r" with 💕"
     )
-    await msg.reply(status, parse_mode="html")
+    await msg.reply(status, parse_mode="markdown")
 
 
 async def index_query(msg: tg.types.Message, rating):
-    reply = await msg.reply("indexing...")
-    q = graph.embed(msg.text)
-    prefs = user_preferences.prefs_for(msg.from_user)
-    prefs.learn_rating(q, rating)
-    await reply.edit_text("...indexed successfully 😊")
+    # TODO: auto-correct
+    _, *given = msg.text.split()
+    given = set(given)
+    known = given.intersection(set(graph.embed.V.keys()))
+    unknown = given - known
+    status = f"I don't recognize these tags: `{' '.join(unknown)}`."
+    if len(unknown) == len(given):
+        status += " No known tags provided. Aborting."
+
+    if unknown:
+        await msg.reply(status, parse_mode="markdown")
+    else:
+        reply = await msg.reply("indexing...")
+        q = graph.embed(" ".join(known))
+        prefs = user_preferences.prefs_for(msg.from_user)
+        prefs.learn_rating(q, rating)
+        await reply.edit_text("...indexed successfully 😊")
 
 
 @bot.on_message(filters=tg.filters.command(["enjoy"]))
@@ -399,7 +399,7 @@ async def walk_step(client: tg.Client, msg: tg.types.Message, last_vibecheck=Non
 
     reply = await msg.reply("searching...")
     traversal = pixie.Traversal(query_neighbors, query_user_pref)
-    likes = list(prefs.visit.likes())
+    likes = list(prefs.rtape.likes())
     tour = pixie.random_walk(likes, traversal)
     visits, counts = zip(*tour)
     counts = np.array(counts)
@@ -410,7 +410,7 @@ async def walk_step(client: tg.Client, msg: tg.types.Message, last_vibecheck=Non
         endpoint = f"https://e621.net/posts/{post_id}.json"
         async with http.get(
             endpoint,
-            headers={"User-Agent": "e6tag by https://github.com/kavorite"},
+            headers={"User-Agent": "https://github.com/kavorite/TaPSy"},
         ) as rsp:
             post = await rsp.json()
             if "success" in post and not post["success"]:
@@ -419,15 +419,9 @@ async def walk_step(client: tg.Client, msg: tg.types.Message, last_vibecheck=Non
                 )
                 await reply.edit_text(status, parse_mode="markdown")
                 return
-    await client.send(
-        tg.raw.messages.SendMedia(
-            tg.raw.types.InputMediaDocumentExternal(post["sample"]["url"]),
-            message=endpoint[:-5],
-            peer=await client.resolve_peer(msg.from_user.id),
-            reply_to_msg_id=reply.id,
-            random_id=tg.session.internals.MsgId(),
-        )
-    )
+    media = tg.raw.types.InputMediaDocumentExternal(url=post["sample"]["url"])
+    reply = await reply.edit_text(text=endpoint[:-5])
+    reply = await reply.edit_media(media=media)
     vibechecks = [
         "Am I good? Or am I good?",
         "I'm feeling lucky.",
@@ -439,33 +433,33 @@ async def walk_step(client: tg.Client, msg: tg.types.Message, last_vibecheck=Non
     if last_vibecheck is not None:
         vibechecks.pop(np.searchsorted(vibechecks, last_vibecheck))
     vibecheck = np.random.choice(vibechecks)
-    await reply.edit_text(vibecheck)
 
     async def rate_if_hot(_: tg.types.CallbackQuery):
         prefs.learn_rating(query, 1.0)
+        await query.answer(vibecheck)
         asyncio.create_task(walk_step(client, msg, vibecheck))
 
     async def rate_if_not(_: tg.types.CallbackQuery):
         prefs.learn_rating(query, 0.0)
+        await query.answer(vibecheck)
         asyncio.create_task(walk_step(client, msg, vibecheck))
 
     async def end_tour(_: tg.types.CallbackQuery):
-        await reply.edit_text("All right, I learned a lot! Visit me again some time 😊")
+        await query.answer("All right, I learned a lot! Message me again sometime.")
 
-    await reply.edit_reply_markup(
-        query_callbacks.inline_prompt(
-            {
-                "rate_not": CBCfg(rate_if_not, "◀"),
-                "end_tour": CBCfg(end_tour, "■"),
-                "rate_hot": CBCfg(rate_if_hot, "▶"),
-            },
-        )
+    query_callbacks.inline_prompt(
+        {
+            "rate_not": CBCfg(rate_if_not, "◀"),
+            "end_tour": CBCfg(end_tour, "■"),
+            "rate_hot": CBCfg(rate_if_hot, "▶"),
+        },
+        reply_to=msg,
     )
 
 
 @bot.on_message(filters=tg.filters.command(["walk"]))
-async def start_tour(_: tg.types.Client, msg: tg.types.Message):
-    if not os.path.exists(user_preferences.model_path(msg.from_user.id)):
+async def start_tour(_: tg.Client, msg: tg.types.Message):
+    if not user_preferences.prefs_for(msg.from_user).initialized():
         status = " ".join(
             """
             Looks like we don't have any data on your preferences! Send me a
@@ -476,16 +470,27 @@ async def start_tour(_: tg.types.Client, msg: tg.types.Message):
         return
 
 
-bot.send(
-    tg.raw.functions.bots.SetBotCommands(
-        [
-            tg.raw.types.BotCommand("start", "send a help and welcome message"),
-            tg.raw.types.BotCommand("about", "about the author 💕"),
-            tg.raw.types.BotCommand("walk", "begin a new tour"),
-            tg.raw.types.BotCommand("enjoy", "tell me a tag combination you like"),
-            tg.raw.types.BotCommand("avoid", "tell me a tag combination you dislike"),
-            tg.raw.types.BotCommand("stop", "halt and drop user data"),
-        ]
+async def main():
+    await bot.start()
+    commands = {
+        "about": "about the author 💕",
+        "start": "send a help and welcome message",
+        "walk": "begin a new tour",
+        "enjoy": "specify a tag combination you like",
+        "avoid": "specify a tag combination you dislike",
+        "stop": "halt and drop user data",
+    }
+    await bot.send(
+        tg.raw.functions.bots.SetBotCommands(
+            commands=[
+                tg.raw.types.BotCommand(command=cmd, description=dsc)
+                for cmd, dsc in commands.items()
+            ]
+        )
     )
-)
-bot.start()
+    await tg.idle()
+    await bot.stop()
+
+
+if __name__ == "__main__":
+    asyncio.get_event_loop().run_until_complete(main())
