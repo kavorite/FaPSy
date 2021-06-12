@@ -18,7 +18,7 @@ print("generate contexts around rare tags...")
 contexts = []
 centroids = []
 for post in tag_hit_generator(tag_idx):
-    tags = post["tags"].split()
+    tags = post["tag_string"].split()
     idxs = np.array([tag_idx[t] for t in tags if t in tag_idx])
     if len(idxs) == 0:
         continue

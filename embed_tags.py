@@ -57,7 +57,7 @@ class TagCoocs:
         self.n_dim = n_dim
 
     def tally(self, post):
-        tags = post["tags"].split()
+        tags = post["tag_string"].split()
         for t in tags:
             if t not in self.vocab:
                 continue
@@ -84,17 +84,23 @@ def main():
     parser.add_argument("--dump-coocs", action="store_true", default=False)
     args = parser.parse_args()
     print("generate cooccurrence matrix...")
-    coocs = TagCoocs(tags_by_freq(args.k_top), args.n_dim)
+    tags = tags_by_freq(args.k_top)
+    frqs = [tag["post_count"] for tag in tags]
+    tags = [tag["name"] for tag in tags]
+    coocs = TagCoocs(tags, args.n_dim)
     print("find post candidates...")
     for post in tag_hit_generator(coocs.vocab):
-        coocs.tally(coocs, post)
+        coocs.tally(post)
 
     print("factorize...")
     D = coocs.embed()
     tags, indx = zip(*coocs.vocab.items())
     vecs = D[np.array(indx)]
     tags = np.array(tags)
-    np.savez("./index/dictionary.npz", tags=tags, vecs=vecs, allow_pickle=False)
+    frqs = np.array(frqs)
+    np.savez(
+        "./index/dictionary.npz", tags=tags, vecs=vecs, frqs=frqs, allow_pickle=False
+    )
     print("embeddings written to ./index/dictionary.npz")
 
 
