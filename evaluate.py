@@ -15,14 +15,14 @@ recognizer = Recognizer(
 attenuator = Attenuator(objective.vecs, np.load("./index/attenuator.npy"))
 
 
-class MSE:
+class CosineError:
     def __init__(self):
         self.n = 0
         self.error = 0
 
     @staticmethod
     def compute(y, yhat):
-        return np.sum((y - yhat) ** 2) / len(y)
+        return (np.dot(y, yhat) + 1e-16) / np.linalg.norm(y) / np.linalg.norm(yhat)
 
     def update(self, y, yhat):
         error = self.compute(y, yhat)
@@ -41,8 +41,8 @@ class MSE:
 print("find post candidates...")
 posts = list(ensure_preview(tag_hit_generator(objective.tags)))
 last_print = 0
-attenuator_error = MSE()
-recognizer_error = MSE()
+attenuator_error = CosineError()
+recognizer_error = CosineError()
 for post, img_str in preview_content(posts):
     tags = post["tag_string"].split()
     y = objective(tags)
@@ -56,5 +56,5 @@ for post, img_str in preview_content(posts):
     now = time.time()
     if now - last_print >= 1.0:
         last_print = now
-        print(f"attenuator MSE: {attenuator_error}")
-        print(f"recognizer MSE: {recognizer_error}")
+        print(f"attenuator CSE: {attenuator_error}")
+        print(f"recognizer CSE: {recognizer_error}")
