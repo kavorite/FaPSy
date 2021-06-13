@@ -1,5 +1,5 @@
 import dataclasses
-from typing import Any, Callable, Iterable
+from typing import Callable, Iterable, Optional
 
 import numpy as np
 
@@ -29,6 +29,7 @@ class Traversal:
 
     neighbors: Callable[[Node], float]
     user_pref: Callable[[Node], float]
+    rng: Optional[np.random.Generator] = np.random.default_rng(seed=0)
 
     goal_hits: int = 16
     node_goal: int = 32
@@ -40,7 +41,6 @@ class Traversal:
 def single_random_walk(
     origin: Node,
     traversal: Traversal,
-    rng: np.random.Generator = np.random.default_rng(seed=0),
 ):
     """
     Use a biased random walk to sample a new post to be the successive steps in
@@ -69,18 +69,18 @@ def single_random_walk(
 
     def personalized_neighbor(node):
         neighbors = list(traversal.neighbors(node))
-        scores = np.full((len(neighbors),), 1 / len(neighbors))
+        scores = np.zeros(len(neighbors)) + 1 / len(neighbors)
         scores += np.array(list(map(traversal.user_pref, neighbors)))
         scores -= scores.min()
         scores /= scores.max()
-        return rng.choice(neighbors, p=scores)
+        return traversal.rng.choice(neighbors, p=scores)
 
     visits = dict()
     goals_hit = 0
     total_hit = 0
     while True:
-        tour = int(rng.random() * traversal.tour_hops)
-        tour = min(traversal.max_strides - total_hit, tour)
+        tour = int(traversal.rng.random() * traversal.tour_hops)
+        tour = min(traversal.hop_steps - total_hit, tour)
         for _hop in range(tour):
             dest = origin
             for _step in range(traversal.hop_steps):
@@ -89,7 +89,7 @@ def single_random_walk(
                 total_hit += 1
                 if total_hit >= traversal.max_steps:
                     return visits
-            if visits[dest] == traversal.node_goal:
+            if visits.get(dest) == traversal.node_goal:
                 goals_hit += 1
             if goals_hit >= traversal.goal_hits:
                 return visits
@@ -99,7 +99,6 @@ def random_walk(
     query_nodes: Iterable[Node],
     node_degrees: Iterable[float],
     traversal: Traversal,
-    rng: np.random.Generator = np.random.default_rng(seed=0),
 ):
     max_degree = np.max(node_degrees)
     node_degrees = np.abs(node_degrees)
@@ -111,7 +110,7 @@ def random_walk(
 
     V = dict()
     for q, n in zip(query_nodes, max_steps):
-        traversal = dataclasses.replace(traversal, max_steps=n, rng=rng)
+        traversal = dataclasses.replace(traversal, max_steps=n)
         tour_hits = single_random_walk(q, traversal)
         for p, k in zip(query_nodes, tour_hits):
             if p not in V:
