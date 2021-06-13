@@ -142,9 +142,7 @@ class PostGraph:
 
     def neighbors(self, query, n, *args, **kwargs):
         q = self.attenuator(query)
-        ids, *rest = self.index.get_nns_by_vector(q, n, *args, **kwargs)
-        ids = np.array(ids) + self.offset
-        return (ids, *rest) if rest else ids
+        return self.index.get_nns_by_vector(q, n, *args, **kwargs)
 
     def centroids(self, query_points, return_weights=True):
         neighborhood = np.array(sorted(set(query_points)))
