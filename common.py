@@ -128,17 +128,20 @@ class PostGraph:
         dictfile = np.load(dictpath)
         V = dict(zip(dictfile["tags"], dictfile["vecs"]))
         A = np.load(os.path.join(root, "attenuator.npy"))
-        R = np.load(os.path.join(root, "recognizer.npy"))
-        index_path = self.search_index(root)
-
+        recodict = np.load(os.path.join(root, "recognizer.npz"))
+        recognizer_slots = "recognizer", "thumb_dim", "highfreq_factor"
         self.root = root
-        self.offset = offset or self.index_offset(index_path) or 0
-        self.embed = Attenuator(V, A, R)
-        self.index = annoy.AnnoyIndex(self.embed.n_dim, metric="angular")
-        self.index.load(os.path.join(root, index_path))
+        self.offset = offset or self.index_offset(root) or 0
+        self.attenuator = Attenuator(V, A)
+        self.recognizer = Recognizer(
+            **{k: v for k, v in recodict.items() if k in recognizer_slots}
+        )
+        self.index = annoy.AnnoyIndex(self.attenuator.n_dim, metric="angular")
+        index_path = self.search_index(root)
+        self.index.load(os.path.join(root, index_path or ""))
 
     def neighbors(self, query, n, *args, **kwargs):
-        q = self.embed(query)
+        q = self.attenuator(query)
         ids, *rest = self.index.get_nns_by_vector(q, n, *args, **kwargs)
         ids = np.array(ids) + self.offset
         return (ids, *rest) if rest else ids
