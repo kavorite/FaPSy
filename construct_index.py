@@ -42,7 +42,7 @@ def main():
             x = embed(post["tag_string"].split())
             ann.add_item(int(post["id"]) - args.offset, x)
     print("constructing index...")
-    ann.build(n_trees=16)
+    ann.build(n_trees=2 * embed.n_dim)
     print(f"index written to {index_name}")
 
 
