@@ -2,13 +2,12 @@ import asyncio
 import dataclasses
 import os
 from collections import deque
-from typing import Awaitable, Callable, Dict, List, Optional, Union
+from typing import Awaitable, Callable, Dict, List, Union
 from urllib.request import urlopen
 
 import aiohttp
 import numpy as np
 import pyrogram as tg
-import tensorflow as tf
 from expiringdict import ExpiringDict
 
 import pixie
@@ -75,71 +74,33 @@ class QueryDispatcher:
             asyncio.create_task(try_op())
 
 
-class QueryRegressor:
-    @classmethod
-    def build_model(cls, attenuator, query):
-        attenuator = tf.cast(attenuator, tf.float32)
-        query = tf.cast(query, tf.float32)
-        n_dim = tf.reduce_min(tf.shape(attenuator))
-        inputs = tf.keras.layers.Input([int(n_dim)])
-        personalization = tf.keras.layers.Dense(1, name="personalization")
-        outputs = tf.keras.layers.Activation("swish", name="activation")(
-            personalization(inputs)
-        )
-        model = tf.keras.Model(inputs, outputs, name="query_regressor")
-        model.build(n_dim)
-        # make sure the preference sums to 1.27 so that swish outputs 0.99
-        preference = tf.linalg.lstsq(query[None, :], tf.constant(1.27)[None, None])
-        personalization.set_weights([preference[:, None], tf.constant([0])])
-        model.compile(
-            optimizer=tf.keras.optimizers.Adam(),
-            loss=tf.keras.losses.MSE,
-        )
-        return model
-
-    def __init__(self, save_path):
-        self.model = None
-        if os.path.exists(save_path):
-            self.model = tf.keras.models.load_model(save_path)
-        self.save_path = save_path
-
-    def __enter__(self, *_):
-        return self
-
-    def __exit__(self, *_):
-        # TODO(kavorite): get rid of blocking I/O
-        if self.model is not None:
-            self.model.save(self.save_path)
-
-    def train(self, query, rating):
-        if self.model is None:
-            self.model = self.build_model(graph.embed.A, query)
-        with self:
-            self.model.train_on_batch(x=query, y=rating)
-
-    def infer(self, query):
-        if self.model is None:
-            return 0.5
-        return float(tf.squeeze(self.model(tf.expand_dims(query, axis=0))))
-
-
 class RatingTape:
-    def __init__(self, save_path, max_len=32, alpha=tau / 2, rvecs=[], rtape=[]):
+    def __init__(
+        self, save_path, max_len=64, alpha=tau / 2, beta=2.0, rvecs=[], rtape=[]
+    ):
         self.save_path = save_path
         self.rvecs = deque(rvecs, maxlen=int(max_len))
         self.rtape = deque(rtape, maxlen=int(max_len))
         self.alpha = alpha
+        self.sigma = 1 / beta
 
     def train(self, query, rating):
-        self.rvecs.append(query)
-        self.rtape.append(rating)
+        norm = np.linalg.norm(query)
+        if norm != 0:
+            query /= norm
+        self.rvecs.appendleft(query)
+        self.rtape.appendleft(rating)
 
-    def infer(self, query):
-        for i, p, s in enumerate(zip(self.rvecs, self.rtape)):
-            if np.allclose(query, p):
-                s *= self.alpha ** (len(self.ratings) - i - 1)
-                return s
-        return None
+    def infer(self, query, k=8):
+        q = np.array(query)
+        if len(q.shape) == 1:
+            q = q[None, :]
+        X = np.vstack(self.rvecs)
+        s = self.alpha ** np.arange(len(self.rvecs))
+        s += self.sigma
+        s /= self.sigma + 1
+        yhats = 1 - np.squeeze(q @ X.T)
+        return sum(self.rtape[i] for i in np.argsort(yhats)[::-1][:k]) / k
 
     def likes(self):
         for q, s in zip(self.rvecs, self.rtape):
@@ -181,49 +142,32 @@ class Preferences:
         self,
         ident: tg.types.User,
         save_root: str,
-        rater: QueryRegressor,
-        visit: RatingTape,
+        rtape: RatingTape,
     ):
         self.save_root = save_root
         self.ident = ident
-        self.rater = rater
-        self.rtape = visit
+        self.rtape = rtape
 
-    @staticmethod
-    def rater_path(save_root, user_id):
-        return os.path.join(save_root, f"{user_id}.prefs.h5")
-
-    def visit_path(save_root, user_id):
+    def rtape_path(save_root, user_id):
         return os.path.join(save_root, f"{user_id}.visit.npz")
-
-    def initialized(self):
-        return self.rater.model is not None
 
     @classmethod
     def load_else_init(cls, save_root: str, ident: tg.types.User):
         if not os.path.exists(save_root):
             os.makedirs(save_root)
-        rtape_path = cls.visit_path(save_root, ident.id)
-        rater_path = cls.rater_path(save_root, ident.id)
+        rtape_path = cls.rtape_path(save_root, ident.id)
         if os.path.exists(rtape_path):
             rtape = RatingTape.load(rtape_path)
         else:
             rtape = RatingTape(rtape_path)
-        rater = QueryRegressor(rater_path)
-        return cls(ident, save_root, rater, rtape)
+        return cls(ident, save_root, rtape)
 
     def infer_rating(self, query):
-        found = self.rtape.get_rating(query)
-        if found:
-            return found
-
-        return self.rater.infer(query)
+        return self.rtape.infer(query)
 
     def learn_rating(self, query, rating):
         with self.rtape:
             self.rtape.train(query, rating)
-        with self.rater:
-            self.rater.train(query, rating)
 
 
 class PrefManager:
@@ -295,7 +239,7 @@ async def confirm_drop(client: tg.Client, msg: tg.types.Message):
         await client.send_message(msg.from_user.id, "☠ Bombs away. Have a good one.")
         drop_cbs = []
         for key in query_callbacks.ledger.keys():
-            if queryy.from_user.id == msg.from_user.id:
+            if query.from_user.id == msg.from_user.id:
                 drop_cbs.append(key)
         for drop in drop_cbs:
             del query_callbacks.ledger[drop]
@@ -328,7 +272,7 @@ async def index_query(msg: tg.types.Message, rating):
     # TODO: auto-correct
     _, *given = msg.text.split()
     given = set(given)
-    known = given.intersection(set(graph.embed.V.keys()))
+    known = given.intersection(set(graph.attenuator.V.keys()))
     unknown = given - known
     status = f"I don't recognize these tags: `{' '.join(unknown)}`."
     if len(unknown) == len(given):
@@ -338,7 +282,7 @@ async def index_query(msg: tg.types.Message, rating):
         await msg.reply(status, parse_mode="markdown")
     else:
         reply = await msg.reply("indexing...")
-        q = graph.embed(" ".join(known))
+        q = graph.attenuator(" ".join(known))
         prefs = user_preferences.prefs_for(msg.from_user)
         prefs.learn_rating(q, rating)
         await reply.edit_text("...indexed successfully 😊")
@@ -356,7 +300,7 @@ async def index_positive(_: tg.Client, msg: tg.types.Message):
 
 @bot.on_message(filters=tg.filters.photo)
 async def index_photo(client: tg.Client, msg: tg.types.Message):
-    reply = await msg.reply("...indexed successfully 😊")
+    reply = await msg.reply("indexing...")
     if msg.photo.thumbs:
         photo = sorted(msg.photo.thumbs, key=lambda thumb: thumb.file_size)[0]
     else:
@@ -381,7 +325,7 @@ async def index_photo(client: tg.Client, msg: tg.types.Message):
             if not chunk:
                 break
     img_str = bytes(img_str)
-    query = graph.embed(img_str)
+    query = graph.attenuator(img_str)
     prefs = user_preferences.prefs_for(msg.from_user)
     prefs.learn_rating(query, 1.0)
     await reply.edit_text("...indexed successfully 😊")
@@ -392,15 +336,17 @@ async def walk_step(client: tg.Client, msg: tg.types.Message, last_vibecheck=Non
     prefs = user_preferences.prefs_for(msg.from_user)
 
     def query_neighbors(query):
-        return [graph.index.get_item_vector(i) for i in graph.neighbors(query)]
+        for q in graph.neighbors(query, 8, search_k=64):
+            x = graph.index.get_item_vector(q)
+            yield tuple(np.around(x, 3))
 
     def query_user_pref(query):
         return prefs.infer_rating(query)
 
     reply = await msg.reply("searching...")
     traversal = pixie.Traversal(query_neighbors, query_user_pref)
-    likes = list(prefs.rtape.likes())
-    tour = pixie.random_walk(likes, traversal)
+    likes = set(tuple(np.around(x, 3)) for x in prefs.rtape.likes())
+    tour = pixie.random_walk(likes, np.ones(len(likes)), traversal)
     visits, counts = zip(*tour)
     counts = np.array(counts)
     visits = np.array(visits, dtype=object)
@@ -475,6 +421,7 @@ async def main():
     commands = {
         "about": "about the author 💕",
         "start": "send a help and welcome message",
+        "help": "send a help and welcome message",
         "walk": "begin a new tour",
         "enjoy": "specify a tag combination you like",
         "avoid": "specify a tag combination you dislike",
