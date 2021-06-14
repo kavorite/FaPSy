@@ -103,7 +103,8 @@ class Attenuator:
 class PostGraph:
     @staticmethod
     def index_offset(index_path):
-        match = re.search(r"[0-9]+", index_path)
+        index_name = os.path.basename(index_path)
+        match = re.search(r"[0-9]+", index_name)
         if match:
             return int(match[0])
 
@@ -122,7 +123,7 @@ class PostGraph:
             scores.append(score)
         return idx_paths[np.argmin(scores)]
 
-    def __init__(self, root: str, offset: int = 0):
+    def __init__(self, root: str, offset: int = None):
         root = os.path.abspath(root)
         dictpath = os.path.join(root, "dictionary.npz")
         dictfile = np.load(dictpath)
@@ -131,6 +132,9 @@ class PostGraph:
         recodict = np.load(os.path.join(root, "recognizer.npz"))
         recognizer_slots = "recognizer", "thumb_dim", "highfreq_factor"
         self.root = root
+        if offset is None:
+            index_name = self.search_index(root)
+            offset = self.index_offset(index_name)
         self.offset = offset or self.index_offset(root) or 0
         self.attenuator = Attenuator(V, A)
         self.recognizer = Recognizer(
