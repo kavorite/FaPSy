@@ -9,7 +9,7 @@ inspired by [`pinterest/pixie`][pixie]. To efficiently sample candidates from
 the local "neighborhood" of a query node for further filtering, we need to
 encode the topology of the network for programs to read very quickly, for which
 I chose to use [`spotify/annoy`][annoy], and also employed techniques from
-[Krawetz][phash], and [Arora, et al.][alacarte]. I'll keep inlining references
+[Krawetz][phash], and [Arora, et al.][alacarte] I'll keep inlining references
 throughout this document at my discretion. You can find a comprehensive list at
 the end in the [markdown source][this].
 
@@ -63,4 +63,4 @@ the end in the [markdown source][this].
 [pixie]: https://medium.com/pinterest-engineering/introducing-pixie-an-advanced-graph-based-recommendation-system-e7b4229b664b
 [phash]: http://www.hackerfactor.com/blog/index.php?/archives/432-Looks-Like-It.html
 [stop_using_word2vec]: https://multithreaded.stitchfix.com/blog/2017/10/18/stop-using-word2vec/
-[this]: /kavorite/tapsy/blob/main/README.md
+[this]: https://raw.githubusercontent.com/kavorite/FaPSy/main/README.md
