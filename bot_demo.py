@@ -3,7 +3,6 @@ import dataclasses
 import os
 import pickle
 from collections import deque
-from operator import attrgetter
 from shutil import rmtree
 from typing import Awaitable, Callable, Dict, List, Union
 from urllib.request import urlopen
@@ -83,7 +82,7 @@ class Recommender:
     ):
         if model is None:
             model = rv.ensemble.AdaptiveRandomForestClassifier()
-        self.likes = []
+        self.seen = deque(maxlen=32)
         self.model = model
         self.save_path = save_path
 
@@ -102,10 +101,11 @@ class Recommender:
         x = self._prep(query)
         y = self.__class__.POSITIVE if positive else self.__class__.NEGATIVE
         self.model.learn_one(x, y)
-        if positive:
-            self.likes.append(query)
+        self.seen.add(query.tobytes())
 
     def infer(self, query):
+        if query.tobytes() in self.seen:
+            return 0.1
         yhat = self.model.predict_proba_one(rv.utils.numpy2dict(query))
         if yhat is None:
             return 0.5
@@ -159,7 +159,6 @@ class Preferences:
         with self.model:
             query = np.array(query)
             self.model.train(query, is_positive)
-            self.model.train(-query, not is_positive)
 
 
 class PrefManager:
@@ -274,9 +273,11 @@ async def index_query(msg: tg.types.Message, positive):
         await msg.reply(status, parse_mode="markdown")
     else:
         reply = await msg.reply("indexing...")
-        q = graph.attenuator(" ".join(known))
         prefs = user_preferences.prefs_for(msg.from_user)
+        q = graph.attenuator(" ".join(known))
         prefs.learn_rating(q, positive)
+        for t in known:
+            prefs.learn_rating(graph.attenuator(t), positive)
         await reply.edit_text("...indexed successfully 😊")
 
 
@@ -326,12 +327,14 @@ async def index_photo(client: tg.Client, msg: tg.types.Message):
 
 
 @bot.on_message(tg.filters.command(["walk"]))
-async def walk_step(client: tg.Client, msg: tg.types.Message, last_vibecheck=None):
+async def walk_step(
+    client: tg.Client, msg: tg.types.Message, last_vibecheck=None, liked=None
+):
     reply = await msg.reply("searching...")
     prefs = user_preferences.prefs_for(msg.from_user)
 
     def query_neighbors(q):
-        max_degree = 32
+        max_degree = 16
         search_params = dict(n=max_degree, search_k=max_degree * 2)
         if isinstance(q, bytes):
             return graph.index.get_nns_by_vector(np.frombuffer(q), **search_params)
@@ -342,23 +345,22 @@ async def walk_step(client: tg.Client, msg: tg.types.Message, last_vibecheck=Non
         if isinstance(query, bytes):
             q = np.frombuffer(query)
         else:
-            q = graph.index.get_item_vector(query)
+            q = np.array(graph.index.get_item_vector(query))
         return prefs.infer_rating(q)
 
     traversal = pixie.Traversal(
-        query_neighbors, query_user_pref, tour_hops=16, max_steps=256
+        query_neighbors,
+        query_user_pref,
+        tour_hops=4,
+        node_goal=4,
+        goal_hits=8,
+        max_steps=128,
     )
-    likes = [x.tobytes() for x in prefs.model.likes]
-    if not likes:
-        status = " ".join(
-            """
-            Looks like we don't have any data on your preferences! Send me a
-            post or two, then start a tour with /walk 😊
-            """.split()
-        )
-        await reply.edit_text(status)
-        return
-    visits, counts = zip(*pixie.random_walk(likes, traversal).items())
+    if liked:
+        search = [liked]
+    else:
+        search = list(traversal.rng.integers(0, graph.index.get_n_items(), size=(8,)))
+    visits, counts = zip(*pixie.random_walk(search, traversal).items())
     counts = np.array(counts)
     visits = np.array(visits, dtype=object)
     node_id = visits[np.argmax(counts)]
@@ -377,13 +379,15 @@ async def walk_step(client: tg.Client, msg: tg.types.Message, last_vibecheck=Non
         vibechecks.pop(np.searchsorted(vibechecks, last_vibecheck))
     vibecheck = np.random.choice(vibechecks)
 
-    async def rate_if_hot(_: tg.types.CallbackQuery):
+    async def rate_if_hot(cbq: tg.types.CallbackQuery):
         prefs.learn_rating(query, 0)
+        asyncio.create_task(cbq.answer())
         asyncio.create_task(walk_step(client, msg, vibecheck))
 
-    async def rate_if_not(_: tg.types.CallbackQuery):
+    async def rate_if_not(cbq: tg.types.CallbackQuery):
         prefs.learn_rating(query, 1)
-        asyncio.create_task(walk_step(client, msg, vibecheck))
+        asyncio.create_task(cbq.answer())
+        asyncio.create_task(walk_step(client, msg, vibecheck, liked=query))
 
     async def end_tour(query: tg.types.CallbackQuery):
         await query.answer("All right, I learned a lot! Message me again sometime.")

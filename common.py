@@ -129,7 +129,7 @@ class PostGraph:
         dictfile = np.load(dictpath)
         V = dict(zip(dictfile["tags"], dictfile["vecs"]))
         A = np.load(os.path.join(root, "attenuator.npy"))
-        recodict = np.load(os.path.join(root, "recognizer.npz"))
+        dictfile = np.load(os.path.join(root, "recognizer.npz"))
         recognizer_slots = "recognizer", "thumb_dim", "highfreq_factor"
         self.root = root
         if offset is None:
@@ -138,7 +138,7 @@ class PostGraph:
         self.offset = offset or self.index_offset(root) or 0
         self.attenuator = Attenuator(V, A)
         self.recognizer = Recognizer(
-            **{k: v for k, v in recodict.items() if k in recognizer_slots}
+            **{k: v for k, v in dictfile.items() if k in recognizer_slots}
         )
         self.index = annoy.AnnoyIndex(self.attenuator.n_dim, metric="angular")
         index_path = self.search_index(root)

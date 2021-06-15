@@ -3,6 +3,7 @@ from collections import Counter
 from typing import Callable, Iterable, Optional
 
 import numpy as np
+from expiringdict import ExpiringDict
 
 
 class Node:
@@ -64,11 +65,12 @@ def single_random_walk(
     """
 
     def personalized_neighbor(node):
-        nodes = list(traversal.neighbors(node))
+        nodes = np.array(list(traversal.neighbors(node)), dtype=object)
         prefs = np.ones(len(nodes))
         prefs *= np.array(list(map(traversal.user_pref, nodes)))
-        nodes = nodes[prefs > 0.5]
-        prefs = prefs[prefs > 0.5]
+        picks = np.where(prefs >= np.median(prefs))
+        nodes = nodes[picks]
+        prefs = prefs[picks]
         prefs /= prefs.sum()
         return traversal.rng.choice(nodes, p=prefs)
 
@@ -96,10 +98,14 @@ def random_walk(
     traversal: Traversal,
 ):
     V = Counter()
-    for q in query_nodes:
-        traversal = dataclasses.replace(
-            traversal, max_steps=traversal.max_steps // len(query_nodes)
-        )
+    query_nodes = np.array(list(query_nodes), dtype=object)
+    query_prefs = np.array([traversal.user_pref(q) for q in query_nodes])
+    selection = np.where(query_prefs >= np.median(query_prefs))
+    query_prefs = query_prefs[selection]
+    query_nodes = query_nodes[selection]
+    max_steps = np.ones(len(query_nodes)) * traversal.max_steps // len(query_nodes)
+    for q, n in zip(query_nodes, max_steps):
+        traversal = dataclasses.replace(traversal, max_steps=n)
         tour_hits = single_random_walk(q, traversal)
         for p, k in tour_hits.items():
             if p != q and k != 0:
