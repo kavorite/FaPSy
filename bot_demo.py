@@ -1,13 +1,17 @@
 import asyncio
 import dataclasses
 import os
+import pickle
 from collections import deque
+from operator import attrgetter
+from shutil import rmtree
 from typing import Awaitable, Callable, Dict, List, Union
 from urllib.request import urlopen
 
 import aiohttp
 import numpy as np
 import pyrogram as tg
+import river as rv
 from expiringdict import ExpiringDict
 
 import pixie
@@ -17,7 +21,6 @@ with urlopen("http://checkip.amazonaws.com/") as rsp:
     remote_host = rsp.read().decode("utf8")[:-1]
 bot = tg.Client(session_name=remote_host, bot_token=os.environ["BOT_TOKEN"])
 graph = PostGraph("./index/")
-tau = (np.sqrt(5) + 1) / 2
 
 
 @dataclasses.dataclass(frozen=True, eq=True)
@@ -74,61 +77,48 @@ class QueryDispatcher:
             asyncio.create_task(try_op())
 
 
-class RatingTape:
+class Recommender:
     def __init__(
-        self, save_path, max_len=64, alpha=tau / 2, beta=2.0, rvecs=[], rtape=[]
+        self, save_path, model: rv.ensemble.AdaptiveRandomForestClassifier = None
     ):
+        if model is None:
+            model = rv.ensemble.AdaptiveRandomForestClassifier()
+        self.likes = []
+        self.model = model
         self.save_path = save_path
-        self.rvecs = deque(rvecs, maxlen=int(max_len))
-        self.rtape = deque(rtape, maxlen=int(max_len))
-        self.alpha = alpha
-        self.sigma = 1 / beta
 
-    def train(self, query, rating):
-        norm = np.linalg.norm(query)
-        if norm != 0:
-            query /= norm
-        self.rvecs.appendleft(query)
-        self.rtape.appendleft(rating)
+    POSITIVE = 1
+    NEGATIVE = 0
 
-    def infer(self, query, k=8):
-        q = np.array(query)
-        if len(q.shape) == 1:
-            q = q[None, :]
-        X = np.vstack(self.rvecs)
-        s = self.alpha ** np.arange(len(self.rvecs))
-        s += self.sigma
-        s /= self.sigma + 1
-        yhats = 1 - np.squeeze(q @ X.T)
-        return sum(self.rtape[i] for i in np.argsort(yhats)[::-1][:k]) / k
+    @staticmethod
+    def _prep(query):
+        query = np.array(query)
+        mag = np.array(np.linalg.norm(query))
+        mag[mag == 0] = 1.0
+        inv = 1 / mag
+        return rv.utils.numpy2dict(query * inv)
 
-    def likes(self):
-        for q, s in zip(self.rvecs, self.rtape):
-            if s > 0.5:
-                yield q
+    def train(self, query, positive):
+        x = self._prep(query)
+        y = self.__class__.POSITIVE if positive else self.__class__.NEGATIVE
+        self.model.learn_one(x, y)
+        if positive:
+            self.likes.append(query)
+
+    def infer(self, query):
+        yhat = self.model.predict_proba_one(rv.utils.numpy2dict(query))
+        if yhat is None:
+            return 0.5
+        return yhat[self.__class__.POSITIVE]
 
     def save(self, path=None):
-        # TODO(kavorite): get rid of blocking I/O
-        rvecs = np.array(self.rvecs)
-        rtape = np.array(self.rtape)
-        max_len = np.array(self.rvecs.maxlen, dtype=np.int32)
-        alpha = np.array(self.alpha)
-        np.savez(
-            self.save_path or path,
-            alpha=alpha,
-            rvecs=rvecs,
-            rtape=rtape,
-            max_len=max_len,
-            allow_pickle=False,
-        )
+        with open(path or self.save_path, "wb+") as ostrm:
+            pickle.dump(self, ostrm)
 
     @classmethod
-    def load(cls, save_path):
-        # TODO(kavorite): get rid of blocking I/O
-        dictfile = np.load(save_path)
-        slots = "rvecs", "rtape", "alpha", "max_len"
-        self = cls(save_path, **{k: dictfile[k] for k in slots})
-        return self
+    def load(cls, path):
+        with open(path, "rb") as istrm:
+            return pickle.load(istrm)
 
     def __enter__(self, *_):
         return self
@@ -142,32 +132,34 @@ class Preferences:
         self,
         ident: tg.types.User,
         save_root: str,
-        rtape: RatingTape,
+        model: Recommender,
     ):
         self.save_root = save_root
         self.ident = ident
-        self.rtape = rtape
+        self.model = model
 
-    def rtape_path(save_root, user_id):
+    def model_path(save_root, user_id):
         return os.path.join(save_root, f"{user_id}.visit.npz")
 
     @classmethod
     def load_else_init(cls, save_root: str, ident: tg.types.User):
         if not os.path.exists(save_root):
             os.makedirs(save_root)
-        rtape_path = cls.rtape_path(save_root, ident.id)
-        if os.path.exists(rtape_path):
-            rtape = RatingTape.load(rtape_path)
+        prefs_path = cls.model_path(save_root, ident.id)
+        if os.path.exists(prefs_path):
+            model = Recommender.load(prefs_path)
         else:
-            rtape = RatingTape(rtape_path)
-        return cls(ident, save_root, rtape)
+            model = Recommender(save_path=prefs_path)
+        return cls(ident, save_root, model)
 
     def infer_rating(self, query):
-        return self.rtape.infer(query)
+        return self.model.infer(query)
 
-    def learn_rating(self, query, rating):
-        with self.rtape:
-            self.rtape.train(query, rating)
+    def learn_rating(self, query, is_positive=True):
+        with self.model:
+            query = np.array(query)
+            self.model.train(query, is_positive)
+            self.model.train(-query, not is_positive)
 
 
 class PrefManager:
@@ -177,22 +169,24 @@ class PrefManager:
         # kibisecond
         self.cache = ExpiringDict(max_age_seconds=1 << 10, max_len=1 << 17)
 
-    @staticmethod
-    def uid(ident: Union[tg.types.User, int]):
-        if isinstance(ident, tg.types.User):
-            return ident.id
-        else:
-            return ident
+    def save_path(self, ident: tg.types.User):
+        return os.path.join(self.save_root, str(ident.id))
 
     def prefs_for(self, ident: tg.types.User) -> Preferences:
-        uid = self.uid(ident)
-        if uid in self.cache:
-            return self.cache[uid]
+        if ident.id in self.cache:
+            return self.cache[ident.id]
         else:
-            save_root = os.path.join(self.save_root, str(ident.id))
-            prefs = Preferences.load_else_init(save_root, ident)
+            prefs = Preferences.load_else_init(self.save_path(ident), ident)
             self.cache[ident.id] = prefs
             return prefs
+
+    def drop(self, ident: tg.types.User):
+        try:
+            rmtree(self.save_path(ident))
+        except FileNotFoundError:
+            pass
+        if ident.id in self.cache:
+            del self.cache[ident.id]
 
 
 query_callbacks = QueryDispatcher()
@@ -233,9 +227,7 @@ async def confirm_drop(client: tg.Client, msg: tg.types.Message):
 
     async def on_confirm(query: tg.types.CallbackQuery):
         await query.answer("Dropping preferences...")
-        root = user_preferences.prefs_for(query.from_user).save_root
-        if os.path.exists(root):
-            os.rmdir(root)
+        user_preferences.drop(query.from_user)
         await client.send_message(msg.from_user.id, "☠ Bombs away. Have a good one.")
         drop_cbs = []
         for key in query_callbacks.ledger.keys():
@@ -268,7 +260,7 @@ async def send_about(client: tg.Client, msg: tg.types.Message):
     await msg.reply(status, parse_mode="markdown")
 
 
-async def index_query(msg: tg.types.Message, rating):
+async def index_query(msg: tg.types.Message, positive):
     # TODO: auto-correct
     _, *given = msg.text.split()
     given = set(given)
@@ -284,18 +276,18 @@ async def index_query(msg: tg.types.Message, rating):
         reply = await msg.reply("indexing...")
         q = graph.attenuator(" ".join(known))
         prefs = user_preferences.prefs_for(msg.from_user)
-        prefs.learn_rating(q, rating)
+        prefs.learn_rating(q, positive)
         await reply.edit_text("...indexed successfully 😊")
 
 
 @bot.on_message(filters=tg.filters.command(["enjoy"]))
 async def index_positive(_: tg.Client, msg: tg.types.Message):
-    await index_query(msg, 1.0)
+    await index_query(msg, True)
 
 
 @bot.on_message(filters=tg.filters.command(["avoid"]))
 async def index_positive(_: tg.Client, msg: tg.types.Message):
-    await index_query(msg, 0.0)
+    await index_query(msg, False)
 
 
 @bot.on_message(filters=tg.filters.photo)
@@ -306,68 +298,73 @@ async def index_photo(client: tg.Client, msg: tg.types.Message):
     else:
         photo = msg.photo
     handle = tg.file_id.FileId.decode(photo.file_id)
-    location = tg.raw.functions.upload.InputPhotoFileLocation(
+    location = tg.raw.types.InputPhotoFileLocation(
         id=handle.media_id,
         access_hash=handle.access_hash,
         file_reference=handle.file_reference,
         thumb_size=handle.thumbnail_size,
     )
-    cursor = 0
     img_str = bytearray()
-    while True:
+    cursor = 0
+    while cursor < photo.file_size - 1:
         fetch = tg.raw.functions.upload.GetFile(
-            location, offset=cursor, limit=photo.file_size
+            location=location,
+            cdn_supported=False,
+            offset=0,
+            limit=1 << 20,
         )
         rsp = await client.send(fetch)
-        if isinstance(rsp, tg.raw.types.upload.File):
-            chunk = rsp.bytes
-            img_str += chunk
-            if not chunk:
-                break
-    img_str = bytes(img_str)
-    query = graph.attenuator(img_str)
+        cursor += len(rsp.bytes)
+        img_str += rsp.bytes
+        if not rsp.bytes:
+            break
+    img_str = rsp.bytes
+    query = graph.recognizer(img_str)
     prefs = user_preferences.prefs_for(msg.from_user)
-    prefs.learn_rating(query, 1.0)
+    prefs.learn_rating(query, True)
     await reply.edit_text("...indexed successfully 😊")
 
 
 @bot.on_message(tg.filters.command(["walk"]))
 async def walk_step(client: tg.Client, msg: tg.types.Message, last_vibecheck=None):
+    reply = await msg.reply("searching...")
     prefs = user_preferences.prefs_for(msg.from_user)
 
-    def query_neighbors(query):
-        for q in graph.neighbors(query, 8, search_k=64):
-            x = graph.index.get_item_vector(q)
-            yield tuple(np.around(x, 3))
+    def query_neighbors(q):
+        max_degree = 32
+        search_params = dict(n=max_degree, search_k=max_degree * 2)
+        if isinstance(q, bytes):
+            return graph.index.get_nns_by_vector(np.frombuffer(q), **search_params)
+        else:
+            return graph.index.get_nns_by_item(q, **search_params)
 
     def query_user_pref(query):
-        return prefs.infer_rating(query)
+        if isinstance(query, bytes):
+            q = np.frombuffer(query)
+        else:
+            q = graph.index.get_item_vector(query)
+        return prefs.infer_rating(q)
 
-    reply = await msg.reply("searching...")
-    traversal = pixie.Traversal(query_neighbors, query_user_pref)
-    likes = set(tuple(np.around(x, 3)) for x in prefs.rtape.likes())
-    tour = pixie.random_walk(likes, np.ones(len(likes)), traversal)
-    visits, counts = zip(*tour)
+    traversal = pixie.Traversal(
+        query_neighbors, query_user_pref, tour_hops=16, max_steps=256
+    )
+    likes = [x.tobytes() for x in prefs.model.likes]
+    if not likes:
+        status = " ".join(
+            """
+            Looks like we don't have any data on your preferences! Send me a
+            post or two, then start a tour with /walk 😊
+            """.split()
+        )
+        await reply.edit_text(status)
+        return
+    visits, counts = zip(*pixie.random_walk(likes, traversal).items())
     counts = np.array(counts)
     visits = np.array(visits, dtype=object)
-    query = visits[np.argmax(counts)]
-    post_id = graph.neighbors(query)[0]
-    async with aiohttp.ClientSession() as http:
-        endpoint = f"https://e621.net/posts/{post_id}.json"
-        async with http.get(
-            endpoint,
-            headers={"User-Agent": "https://github.com/kavorite/TaPSy"},
-        ) as rsp:
-            post = await rsp.json()
-            if "success" in post and not post["success"]:
-                status = (
-                    f"fetch [/posts/{post_id}]({endpoint[:-5]}): " f"{post['reason']}"
-                )
-                await reply.edit_text(status, parse_mode="markdown")
-                return
-    media = tg.raw.types.InputMediaDocumentExternal(url=post["sample"]["url"])
-    reply = await reply.edit_text(text=endpoint[:-5])
-    reply = await reply.edit_media(media=media)
+    node_id = visits[np.argmax(counts)]
+    post_id = node_id + graph.offset
+    query = graph.index.get_item_vector(node_id)
+    endpoint = f"https://e621.net/posts/{post_id}"
     vibechecks = [
         "Am I good? Or am I good?",
         "I'm feeling lucky.",
@@ -381,39 +378,26 @@ async def walk_step(client: tg.Client, msg: tg.types.Message, last_vibecheck=Non
     vibecheck = np.random.choice(vibechecks)
 
     async def rate_if_hot(_: tg.types.CallbackQuery):
-        prefs.learn_rating(query, 1.0)
-        await query.answer(vibecheck)
+        prefs.learn_rating(query, 0)
         asyncio.create_task(walk_step(client, msg, vibecheck))
 
     async def rate_if_not(_: tg.types.CallbackQuery):
-        prefs.learn_rating(query, 0.0)
-        await query.answer(vibecheck)
+        prefs.learn_rating(query, 1)
         asyncio.create_task(walk_step(client, msg, vibecheck))
 
-    async def end_tour(_: tg.types.CallbackQuery):
+    async def end_tour(query: tg.types.CallbackQuery):
         await query.answer("All right, I learned a lot! Message me again sometime.")
 
-    query_callbacks.inline_prompt(
+    rating_prompt = query_callbacks.inline_prompt(
         {
-            "rate_not": CBCfg(rate_if_not, "◀"),
-            "end_tour": CBCfg(end_tour, "■"),
-            "rate_hot": CBCfg(rate_if_hot, "▶"),
+            "rate_not": CBCfg(rate_if_not, "👎"),
+            "end_tour": CBCfg(end_tour, "🛑"),
+            "rate_hot": CBCfg(rate_if_hot, "👍"),
         },
         reply_to=msg,
     )
-
-
-@bot.on_message(filters=tg.filters.command(["walk"]))
-async def start_tour(_: tg.Client, msg: tg.types.Message):
-    if not user_preferences.prefs_for(msg.from_user).initialized():
-        status = " ".join(
-            """
-            Looks like we don't have any data on your preferences! Send me a
-            post or two, then start a tour with /walk 😊"
-            """.split()
-        )
-        await msg.reply(status)
-        return
+    status = f"{endpoint}\n{vibecheck}"
+    reply = await reply.edit_text(status, reply_markup=rating_prompt)
 
 
 async def main():

@@ -1,4 +1,5 @@
 import dataclasses
+from collections import Counter
 from typing import Callable, Iterable, Optional
 
 import numpy as np
@@ -21,10 +22,6 @@ class Traversal:
         goal_hits.
     tour_hops (int):
         upper bound on the number of steps in a single random walk.
-    hop_steps (int):
-        Constant stride describing the length of each hop. Each node will
-        receive hop_steps iterations away from it over the course of a tour, so
-        make this small (e.g. =2 for bipartite graphs, as used in Pixie).
     """
 
     neighbors: Callable[[Node], float]
@@ -35,7 +32,6 @@ class Traversal:
     node_goal: int = 32
     max_steps: int = 256
     tour_hops: int = 8
-    hop_steps: int = 1
 
 
 def single_random_walk(
@@ -68,28 +64,28 @@ def single_random_walk(
     """
 
     def personalized_neighbor(node):
-        neighbors = list(traversal.neighbors(node))
-        scores = np.zeros(len(neighbors)) + 1 / len(neighbors)
-        scores += np.array(list(map(traversal.user_pref, neighbors)))
-        scores -= scores.min()
-        scores /= scores.max()
-        return traversal.rng.choice(neighbors, p=scores)
+        nodes = list(traversal.neighbors(node))
+        prefs = np.ones(len(nodes))
+        prefs *= np.array(list(map(traversal.user_pref, nodes)))
+        nodes = nodes[prefs > 0.5]
+        prefs = prefs[prefs > 0.5]
+        prefs /= prefs.sum()
+        return traversal.rng.choice(nodes, p=prefs)
 
     visits = dict()
     goals_hit = 0
     total_hit = 0
     while True:
-        tour = int(traversal.rng.random() * traversal.tour_hops)
-        tour = min(traversal.hop_steps - total_hit, tour)
+        tour = traversal.rng.integers(1, traversal.tour_hops + 1)
+        dest = origin
         for _hop in range(tour):
-            dest = origin
-            for _step in range(traversal.hop_steps):
+            if dest != origin:
                 visits[dest] = visits.get(dest, 0) + 1
-                dest = personalized_neighbor(dest)
-                total_hit += 1
-                if total_hit >= traversal.max_steps:
-                    return visits
-            if visits.get(dest) == traversal.node_goal:
+            dest = personalized_neighbor(dest)
+            total_hit += 1
+            if total_hit >= traversal.max_steps:
+                return visits
+            if visits.get(dest, 0) == traversal.node_goal:
                 goals_hit += 1
             if goals_hit >= traversal.goal_hits:
                 return visits
@@ -97,24 +93,16 @@ def single_random_walk(
 
 def random_walk(
     query_nodes: Iterable[Node],
-    node_degrees: Iterable[float],
     traversal: Traversal,
 ):
-    max_degree = np.max(node_degrees)
-    node_degrees = np.abs(node_degrees)
-    node_prefs = node_degrees * (max_degree - np.log(node_degrees))
-    max_steps = np.array([traversal.user_pref(q) for q in query_nodes])
-    max_steps *= node_prefs
-    max_steps *= traversal.max_steps
-    max_steps /= node_prefs.sum()
-
-    V = dict()
-    for q, n in zip(query_nodes, max_steps):
-        traversal = dataclasses.replace(traversal, max_steps=n)
+    V = Counter()
+    for q in query_nodes:
+        traversal = dataclasses.replace(
+            traversal, max_steps=traversal.max_steps // len(query_nodes)
+        )
         tour_hits = single_random_walk(q, traversal)
-        for p, k in zip(query_nodes, tour_hits):
-            if p not in V:
-                V[p] = 0
-            V[p] += np.sqrt(k)
+        for p, k in tour_hits.items():
+            if p != q and k != 0:
+                V[p] += np.sqrt(float(k))
 
     return {p: k ** 2 for p, k in V.items()}
